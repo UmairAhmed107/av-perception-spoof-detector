@@ -5,16 +5,18 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import type { FrameTelemetry } from '../types';
-import { Camera, Eye, Zap, ShieldAlert, CheckCircle2 } from 'lucide-react';
+import { Camera, Eye, Zap, ShieldAlert, CheckCircle2, Box } from 'lucide-react';
 
 interface BevCanvasProps {
   telemetry: FrameTelemetry | null;
   historyTrail: { x: number; y: number }[];
+  onToggleViewMode?: () => void;
 }
 
 export const BevCanvas: React.FC<BevCanvasProps> = ({
   telemetry,
   historyTrail,
+  onToggleViewMode,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -397,6 +399,29 @@ export const BevCanvas: React.FC<BevCanvasProps> = ({
             <Camera size={14} />
             PNG
           </button>
+          {onToggleViewMode && (
+            <button
+              onClick={onToggleViewMode}
+              style={{
+                fontSize: '0.72rem',
+                fontWeight: 700,
+                padding: '4px 10px',
+                background: '#0284c7',
+                color: '#ffffff',
+                border: '1px solid #0284c7',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                boxShadow: '0 2px 4px rgba(2,132,199,0.2)',
+              }}
+              title="Switch to 3D Digital Twin View"
+            >
+              <Box size={13} />
+              3D View
+            </button>
+          )}
         </div>
       </div>
 

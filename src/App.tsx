@@ -16,6 +16,7 @@ import { createInitialHistory, evaluateFrame, type EvaluationHistory } from './l
 
 // Components
 import { BevCanvas } from './components/BevCanvas';
+import { Scene3D } from './components/Scene3D';
 import { LiveAnalysisPanel } from './components/LiveAnalysisPanel';
 import { TelemetryPanel } from './components/TelemetryPanel';
 import { FlowchartPipeline } from './components/FlowchartPipeline';
@@ -42,12 +43,16 @@ import {
   Activity,
   Layers,
   AlertTriangle,
+  Box,
 } from 'lucide-react';
 
 export const App: React.FC = () => {
   // Scenario & Params state
   const [activeScenarioId, setActiveScenarioId] = useState<ScenarioId>('scen_1_cyclist_tangential');
   const [params, setParams] = useState<SimulationParams>(DEFAULT_SIM_PARAMS);
+
+  // View mode toggle: 2D BEV vs 3D Digital Twin
+  const [viewMode, setViewMode] = useState<'2d' | '3d'>('3d');
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
@@ -320,8 +325,63 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Modal Navigation Buttons */}
+        {/* Modal Navigation Buttons & 2D/3D View Switcher */}
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
+          {/* 2D / 3D Mode Toggle Pill */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              background: '#f1f5f9',
+              borderRadius: '6px',
+              padding: '2px',
+              border: '1px solid #cbd5e1',
+            }}
+          >
+            <button
+              onClick={() => setViewMode('2d')}
+              style={{
+                padding: '4px 9px',
+                fontSize: '0.74rem',
+                fontWeight: 700,
+                borderRadius: '4px',
+                border: 'none',
+                background: viewMode === '2d' ? '#0f172a' : 'transparent',
+                color: viewMode === '2d' ? '#ffffff' : '#64748b',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                transition: 'all 0.15s ease',
+              }}
+              title="2D Bird's-Eye-View Canvas"
+            >
+              <Layers size={13} />
+              2D BEV
+            </button>
+            <button
+              onClick={() => setViewMode('3d')}
+              style={{
+                padding: '4px 9px',
+                fontSize: '0.74rem',
+                fontWeight: 700,
+                borderRadius: '4px',
+                border: 'none',
+                background: viewMode === '3d' ? '#0284c7' : 'transparent',
+                color: viewMode === '3d' ? '#ffffff' : '#64748b',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                transition: 'all 0.15s ease',
+              }}
+              title="3D Three.js Sensor Digital Twin"
+            >
+              <Box size={13} />
+              3D View
+            </button>
+          </div>
+
           <button
             onClick={() => setShowScenarioAlert(true)}
             className="btn-secondary"
@@ -397,9 +457,24 @@ export const App: React.FC = () => {
         {/* LEFT COLUMN: SIMULATION & PLAYBACK CONTROLS                     */}
         {/* =============================================================== */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          {/* Bird's-Eye-View Simulation Canvas */}
-          <div style={{ height: '450px' }}>
-            <BevCanvas telemetry={telemetry} historyTrail={motionTrail} />
+          {/* Simulation View (2D BEV Canvas or 3D Digital Twin) */}
+          <div style={{ height: '460px', position: 'relative' }}>
+            {viewMode === '2d' ? (
+              <BevCanvas
+                telemetry={telemetry}
+                historyTrail={motionTrail}
+                onToggleViewMode={() => setViewMode('3d')}
+              />
+            ) : (
+              <Scene3D
+                telemetry={telemetry}
+                historyTrail={motionTrail}
+                scenarioId={activeScenarioId}
+                isPlaying={isPlaying}
+                onToggleViewMode={() => setViewMode('2d')}
+                viewMode={viewMode}
+              />
+            )}
           </div>
 
           {/* PLAYBACK CONTROLS DIRECTLY BELOW SIMULATION (Image 1 placement) */}

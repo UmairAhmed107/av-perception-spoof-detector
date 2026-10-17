@@ -1,6 +1,7 @@
 // ============================================================================
-// 3D Physical Sensor Integrity & Perception Verification Scene (Three.js / R3F)
-// Real-Time Cross-Modal Digital Twin: LiDAR Point Cloud, Radar Arc, EKF & Threat Attribution
+// 3D Physical Sensor Integrity & Perception Verification Digital Twin (Three.js / R3F)
+// Enhanced Closed-Loop Simulation Box: Dynamic AEB Vehicle Dynamics, Pitch & Suspension,
+// FMCW Radar Chirps, EKF Covariance Uncertainty Ellipse, Stopping Ribbon & Tailgater Risk
 // ============================================================================
 
 import React, { useRef, useMemo, useState, useEffect } from 'react';
@@ -16,10 +17,16 @@ import {
   Compass,
   RotateCw,
   Box,
+  CloudRain,
+  Radio,
+  Gauge,
+  Zap,
+  Activity,
+  AlertOctagon,
 } from 'lucide-react';
 
 // ============================================================================
-// Scratch Math Objects (Zero Per-Frame Garbage Collection Allocation)
+// Zero Per-Frame Garbage Collection Math Primitives
 // ============================================================================
 const _scratchVec1 = new THREE.Vector3();
 const _scratchVec2 = new THREE.Vector3();
@@ -44,6 +51,23 @@ export interface Scene3DProps {
 type CameraMode = 'topdown' | 'chase' | 'orbit';
 
 // ============================================================================
+// Shared Ego Dynamic Physics State (Closed-Loop Longitudinal Actuation)
+// ============================================================================
+interface EgoDynamicState {
+  speedMs: number; // Current ego velocity in m/s (0 - 16.7 m/s)
+  speedKmh: number; // Current ego velocity in km/h
+  accelG: number; // Current acceleration in Gs (-0.85G to +0.25G)
+  pitchRad: number; // Nose dive pitch angle on heavy braking
+  travelDist: number; // Integrated odometer distance for scrolling tarmac
+  isBraking: boolean; // AEB brake actuator active
+  stoppingDist: number; // Projected stopping distance in meters
+  followerDist: number; // Distance of trailing car behind ego in meters
+  followerRisk: boolean; // Flagged when false emergency stop endangers trailing car
+  manualSpoof: boolean; // User manual threat injection override
+  rainActive: boolean; // Rain weather simulation active
+}
+
+// ============================================================================
 // Camera Controller with Smooth Damped Interpolation
 // ============================================================================
 function CameraController({
@@ -64,7 +88,7 @@ function CameraController({
       targetCamPos.current.set(0, 38, -12);
       targetLookAt.current.set(0, 0, -14);
     } else if (cameraMode === 'chase') {
-      targetCamPos.current.set(0, 3.2, 5.5);
+      targetCamPos.current.set(0, 3.4, 6.0);
       targetLookAt.current.set(0, 1.2, -18);
     }
   }, [cameraMode]);
@@ -99,18 +123,32 @@ function CameraController({
 }
 
 // ============================================================================
-// Ground Plane, Asphalt Road, Lane Dashes & Range Distance Rings
+// Ground Plane, Asphalt Road & Dynamic Scrolling Lane Dashes
 // ============================================================================
-function EnvironmentRoad() {
+function EnvironmentRoad({
+  egoStateRef,
+}: {
+  egoStateRef: React.MutableRefObject<EgoDynamicState>;
+}) {
+  const dashesGroupRef = useRef<THREE.Group>(null);
+
   const dashes = useMemo(() => {
     const list: number[] = [];
-    for (let z = 18; z >= -80; z -= 7) {
+    for (let z = 25; z >= -85; z -= 7) {
       list.push(z);
     }
     return list;
   }, []);
 
   const rangeRings = [5, 10, 15, 20, 25, 30];
+
+  useFrame(() => {
+    // Scroll lane dashes based on dynamic vehicle travel distance
+    if (dashesGroupRef.current) {
+      const offset = egoStateRef.current.travelDist % 7.0;
+      dashesGroupRef.current.position.z = offset;
+    }
+  });
 
   return (
     <group>
@@ -122,34 +160,36 @@ function EnvironmentRoad() {
 
       {/* Main Road Asphalt */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, -30]} receiveShadow>
-        <planeGeometry args={[8.4, 110]} />
-        <meshStandardMaterial color="#e2e8f0" roughness={0.7} metalness={0.1} />
+        <planeGeometry args={[8.4, 120]} />
+        <meshStandardMaterial color="#e2e8f0" roughness={0.65} metalness={0.12} />
       </mesh>
 
       {/* Road Shoulder / Curbs */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[-4.25, 0.005, -30]}>
-        <planeGeometry args={[0.2, 110]} />
+        <planeGeometry args={[0.2, 120]} />
         <meshBasicMaterial color="#cbd5e1" />
       </mesh>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[4.25, 0.005, -30]}>
-        <planeGeometry args={[0.2, 110]} />
+        <planeGeometry args={[0.2, 120]} />
         <meshBasicMaterial color="#cbd5e1" />
       </mesh>
 
-      {/* Center Lane Dashes */}
-      {dashes.map((z) => (
-        <mesh key={z} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, z]}>
-          <planeGeometry args={[0.18, 3.2]} />
-          <meshBasicMaterial color="#94a3b8" />
-        </mesh>
-      ))}
+      {/* Scrolling Center Lane Dashes */}
+      <group ref={dashesGroupRef}>
+        {dashes.map((z) => (
+          <mesh key={z} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, z]}>
+            <planeGeometry args={[0.18, 3.2]} />
+            <meshBasicMaterial color="#94a3b8" />
+          </mesh>
+        ))}
+      </group>
 
       {/* Concentric Distance Rings (Originating at Ego (0,0,0)) */}
       {rangeRings.map((r) => (
         <group key={r}>
           <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.008, 0]}>
             <ringGeometry args={[r - 0.04, r + 0.04, 64]} />
-            <meshBasicMaterial color="#cbd5e1" transparent opacity={0.5} />
+            <meshBasicMaterial color="#cbd5e1" transparent opacity={0.45} />
           </mesh>
           <Html position={[r + 0.3, 0.05, 0]} center distanceFactor={22}>
             <span
@@ -173,72 +213,381 @@ function EnvironmentRoad() {
 }
 
 // ============================================================================
-// Ego Vehicle (Autonomous Car with Roof LiDAR & Front Radar Module)
+// Ego Autonomous Car with Suspension Pitch / Nose Dive & Braking Skid Marks
 // ============================================================================
-function EgoCar() {
+function EgoCar({
+  egoStateRef,
+}: {
+  egoStateRef: React.MutableRefObject<EgoDynamicState>;
+}) {
+  const chassisRef = useRef<THREE.Group>(null);
+  const skidLeftRef = useRef<THREE.Mesh>(null);
+  const skidRightRef = useRef<THREE.Mesh>(null);
+
+  useFrame(() => {
+    if (!chassisRef.current) return;
+    const ego = egoStateRef.current;
+
+    // Apply physical suspension pitch (nose-dive under heavy AEB braking)
+    chassisRef.current.rotation.x = ego.pitchRad;
+
+    // Show black tire skid marks on road when braking heavily (a < -5 m/s^2)
+    const isHardBraking = ego.accelG < -0.4;
+    if (skidLeftRef.current && skidRightRef.current) {
+      skidLeftRef.current.visible = isHardBraking;
+      skidRightRef.current.visible = isHardBraking;
+    }
+  });
+
   return (
     <group position={[0, 0, 0]}>
-      {/* Lower Chassis / Body */}
-      <mesh position={[0, 0.42, 0]} castShadow receiveShadow>
-        <boxGeometry args={[1.9, 0.65, 4.3]} />
-        <meshStandardMaterial color="#1e293b" roughness={0.3} metalness={0.7} />
+      {/* Tire Skid Marks Under Rear Tires during AEB Deceleration */}
+      <mesh
+        ref={skidLeftRef}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[-0.98, 0.012, 1.35]}
+        visible={false}
+      >
+        <planeGeometry args={[0.22, 3.8]} />
+        <meshBasicMaterial color="#1e293b" transparent opacity={0.65} />
+      </mesh>
+      <mesh
+        ref={skidRightRef}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0.98, 0.012, 1.35]}
+        visible={false}
+      >
+        <planeGeometry args={[0.22, 3.8]} />
+        <meshBasicMaterial color="#1e293b" transparent opacity={0.65} />
       </mesh>
 
-      {/* Cabin / Glass Roof */}
-      <mesh position={[0, 0.98, 0.2]} castShadow>
-        <boxGeometry args={[1.55, 0.52, 2.2]} />
-        <meshStandardMaterial color="#0f172a" roughness={0.1} metalness={0.9} transparent opacity={0.88} />
-      </mesh>
-
-      {/* Headlights (Cyan Technical Accents) */}
-      <mesh position={[-0.7, 0.48, -2.16]}>
-        <boxGeometry args={[0.3, 0.12, 0.06]} />
-        <meshBasicMaterial color="#00f2fe" />
-      </mesh>
-      <mesh position={[0.7, 0.48, -2.16]}>
-        <boxGeometry args={[0.3, 0.12, 0.06]} />
-        <meshBasicMaterial color="#00f2fe" />
-      </mesh>
-
-      {/* Rear Brake Lights */}
-      <mesh position={[-0.7, 0.48, 2.16]}>
-        <boxGeometry args={[0.3, 0.12, 0.06]} />
-        <meshBasicMaterial color="#e11d48" />
-      </mesh>
-      <mesh position={[0.7, 0.48, 2.16]}>
-        <boxGeometry args={[0.3, 0.12, 0.06]} />
-        <meshBasicMaterial color="#e11d48" />
-      </mesh>
-
-      {/* 4 Wheels */}
-      {[-0.98, 0.98].map((x) =>
-        [-1.35, 1.35].map((z) => (
-          <mesh key={`${x}-${z}`} position={[x, 0.32, z]} rotation={[0, 0, Math.PI / 2]}>
-            <cylinderGeometry args={[0.32, 0.32, 0.24, 16]} />
-            <meshStandardMaterial color="#334155" roughness={0.8} />
-          </mesh>
-        ))
-      )}
-
-      {/* Roof LiDAR Puck */}
-      <group position={[0, 1.3, 0.1]}>
-        <mesh>
-          <cylinderGeometry args={[0.13, 0.13, 0.14, 16]} />
-          <meshStandardMaterial color="#0284c7" roughness={0.2} metalness={0.8} />
+      {/* Dynamic Chassis Group (Tilts with Acceleration/Braking Pitch) */}
+      <group ref={chassisRef}>
+        {/* Lower Chassis / Body */}
+        <mesh position={[0, 0.42, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1.9, 0.65, 4.3]} />
+          <meshStandardMaterial color="#1e293b" roughness={0.3} metalness={0.7} />
         </mesh>
-        {/* Glowing Optical Aperture Ring */}
-        <mesh position={[0, 0.02, 0]}>
-          <cylinderGeometry args={[0.135, 0.135, 0.03, 16]} />
-          <meshBasicMaterial color="#38bdf8" />
+
+        {/* Cabin / Glass Roof */}
+        <mesh position={[0, 0.98, 0.2]} castShadow>
+          <boxGeometry args={[1.55, 0.52, 2.2]} />
+          <meshStandardMaterial
+            color="#0f172a"
+            roughness={0.1}
+            metalness={0.9}
+            transparent
+            opacity={0.88}
+          />
+        </mesh>
+
+        {/* Headlights (Cyan Technical Accents) */}
+        <mesh position={[-0.7, 0.48, -2.16]}>
+          <boxGeometry args={[0.3, 0.12, 0.06]} />
+          <meshBasicMaterial color="#00f2fe" />
+        </mesh>
+        <mesh position={[0.7, 0.48, -2.16]}>
+          <boxGeometry args={[0.3, 0.12, 0.06]} />
+          <meshBasicMaterial color="#00f2fe" />
+        </mesh>
+
+        {/* Rear Brake Lights (Glow Bright Crimson when Braking) */}
+        <mesh position={[-0.7, 0.48, 2.16]}>
+          <boxGeometry args={[0.3, 0.12, 0.06]} />
+          <meshBasicMaterial color="#e11d48" />
+        </mesh>
+        <mesh position={[0.7, 0.48, 2.16]}>
+          <boxGeometry args={[0.3, 0.12, 0.06]} />
+          <meshBasicMaterial color="#e11d48" />
+        </mesh>
+
+        {/* 4 Wheels */}
+        {[-0.98, 0.98].map((x) =>
+          [-1.35, 1.35].map((z) => (
+            <mesh key={`${x}-${z}`} position={[x, 0.32, z]} rotation={[0, 0, Math.PI / 2]}>
+              <cylinderGeometry args={[0.32, 0.32, 0.24, 16]} />
+              <meshStandardMaterial color="#334155" roughness={0.8} />
+            </mesh>
+          ))
+        )}
+
+        {/* Roof LiDAR Puck */}
+        <group position={[0, 1.3, 0.1]}>
+          <mesh>
+            <cylinderGeometry args={[0.13, 0.13, 0.14, 16]} />
+            <meshStandardMaterial color="#0284c7" roughness={0.2} metalness={0.8} />
+          </mesh>
+          {/* Glowing Optical Aperture Ring */}
+          <mesh position={[0, 0.02, 0]}>
+            <cylinderGeometry args={[0.135, 0.135, 0.03, 16]} />
+            <meshBasicMaterial color="#38bdf8" />
+          </mesh>
+        </group>
+
+        {/* Front Radar Sensor Module on Bumper */}
+        <mesh position={[0, 0.45, -2.17]}>
+          <boxGeometry args={[0.26, 0.16, 0.05]} />
+          <meshStandardMaterial color="#7c3aed" roughness={0.4} metalness={0.6} />
         </mesh>
       </group>
-
-      {/* Front Radar Sensor Module on Bumper */}
-      <mesh position={[0, 0.45, -2.17]}>
-        <boxGeometry args={[0.26, 0.16, 0.05]} />
-        <meshStandardMaterial color="#7c3aed" roughness={0.4} metalness={0.6} />
-      </mesh>
     </group>
+  );
+}
+
+// ============================================================================
+// Dynamic Stopping Distance Ribbon (Projected Ahead of Ego)
+// ============================================================================
+function StoppingDistanceRibbon({
+  egoStateRef,
+  dataRef,
+  visible,
+}: {
+  egoStateRef: React.MutableRefObject<EgoDynamicState>;
+  dataRef: React.MutableRefObject<FrameTelemetry | null>;
+  visible: boolean;
+}) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
+
+  useFrame(() => {
+    if (!meshRef.current || !matRef.current) return;
+    if (!visible) {
+      meshRef.current.visible = false;
+      return;
+    }
+
+    const ego = egoStateRef.current;
+    const stopLen = Math.max(0.5, ego.stoppingDist);
+    meshRef.current.visible = ego.speedMs > 0.5;
+
+    // Scale ribbon length along Z
+    meshRef.current.scale.set(1, 1, stopLen);
+    meshRef.current.position.set(0, 0.015, -2.18 - stopLen / 2);
+
+    // Color code ribbon based on target proximity
+    if (dataRef.current) {
+      const gt = dataRef.current.measurement.groundTruth;
+      const targetDist = Math.hypot(gt.pos.x, gt.pos.y);
+      if (targetDist < stopLen) {
+        matRef.current.color.set('#ef4444'); // Target within stopping distance! Critical!
+        matRef.current.opacity = 0.45;
+      } else if (targetDist < stopLen * 1.5) {
+        matRef.current.color.set('#f59e0b'); // Approaching stopping zone
+        matRef.current.opacity = 0.35;
+      } else {
+        matRef.current.color.set('#10b981'); // Safe stopping margin
+        matRef.current.opacity = 0.25;
+      }
+    }
+  });
+
+  return (
+    <mesh ref={meshRef} rotation={[-Math.PI / 2, 0, 0]}>
+      <planeGeometry args={[2.0, 1.0]} />
+      <meshBasicMaterial ref={matRef} color="#10b981" transparent opacity={0.3} side={THREE.DoubleSide} />
+    </mesh>
+  );
+}
+
+// ============================================================================
+// Virtual Trailing Follower Vehicle (Visualizes False Emergency Brake Risk)
+// ============================================================================
+function FollowerCar({
+  egoStateRef,
+}: {
+  egoStateRef: React.MutableRefObject<EgoDynamicState>;
+}) {
+  const carGroupRef = useRef<THREE.Group>(null);
+  const [showRiskBadge, setShowRiskBadge] = useState(false);
+
+  useFrame(() => {
+    if (!carGroupRef.current) return;
+    const ego = egoStateRef.current;
+
+    // Update Z position behind ego car
+    carGroupRef.current.position.set(0, 0, ego.followerDist);
+
+    if (ego.followerRisk !== showRiskBadge) {
+      setShowRiskBadge(ego.followerRisk);
+    }
+  });
+
+  return (
+    <group ref={carGroupRef} position={[0, 0, 12]}>
+      {/* Trailing Car Body (Silver Sedan) */}
+      <mesh position={[0, 0.4, 0]}>
+        <boxGeometry args={[1.8, 0.62, 3.9]} />
+        <meshStandardMaterial color="#94a3b8" metalness={0.7} roughness={0.3} />
+      </mesh>
+      <mesh position={[0, 0.88, 0.1]}>
+        <boxGeometry args={[1.5, 0.5, 2.0]} />
+        <meshStandardMaterial color="#334155" transparent opacity={0.8} />
+      </mesh>
+      {/* Front Headlights */}
+      <mesh position={[-0.65, 0.45, -2.0]}>
+        <boxGeometry args={[0.25, 0.1, 0.05]} />
+        <meshBasicMaterial color="#fef08a" />
+      </mesh>
+      <mesh position={[0.65, 0.45, -2.0]}>
+        <boxGeometry args={[0.25, 0.1, 0.05]} />
+        <meshBasicMaterial color="#fef08a" />
+      </mesh>
+
+      {/* Rear-End Hazard Alert when False Brake Engages */}
+      {showRiskBadge && (
+        <Html position={[0, 1.8, 0]} center distanceFactor={20}>
+          <div
+            style={{
+              background: 'rgba(225, 29, 72, 0.95)',
+              color: '#ffffff',
+              padding: '3px 8px',
+              borderRadius: '4px',
+              fontFamily: 'monospace',
+              fontSize: '11px',
+              fontWeight: 800,
+              whiteSpace: 'nowrap',
+              boxShadow: '0 2px 10px rgba(225, 29, 72, 0.4)',
+              border: '1px solid #fecdd3',
+              pointerEvents: 'none',
+              animation: 'pulse 0.8s infinite alternate',
+            }}
+          >
+            ⚠️ REAR-END COLLISION RISK (TTC &lt; 0.6s)
+          </div>
+        </Html>
+      )}
+    </group>
+  );
+}
+
+// ============================================================================
+// EKF Covariance Uncertainty Ellipse (Ground Projection at Target)
+// ============================================================================
+function EKFCovarianceEllipse({
+  dataRef,
+}: {
+  dataRef: React.MutableRefObject<FrameTelemetry | null>;
+}) {
+  const ellipseRef = useRef<THREE.Mesh>(null);
+
+  useFrame(() => {
+    if (!ellipseRef.current || !dataRef.current) return;
+    const telem = dataRef.current;
+    const ekf = telem.ekf;
+
+    // Position at EKF estimated target coordinates
+    ellipseRef.current.position.set(ekf.pos.x, 0.02, -ekf.pos.y);
+
+    // Scale ellipse based on sigma uncertainty (2 * sigma confidence bound)
+    const sx = Math.max(0.6, ekf.sigmaVx * 1.5);
+    const sy = Math.max(0.6, ekf.sigmaTotal * 1.5);
+    ellipseRef.current.scale.set(sx, sy, 1);
+  });
+
+  return (
+    <mesh ref={ellipseRef} rotation={[-Math.PI / 2, 0, 0]}>
+      <ringGeometry args={[0.9, 1.05, 32]} />
+      <meshBasicMaterial color="#06b6d4" transparent opacity={0.6} side={THREE.DoubleSide} />
+    </mesh>
+  );
+}
+
+// ============================================================================
+// FMCW Radar Radiating Electromagnetic Wavefront Rings
+// ============================================================================
+function RadarWavefrontRings({
+  dataRef,
+  visible,
+}: {
+  dataRef: React.MutableRefObject<FrameTelemetry | null>;
+  visible: boolean;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+
+  const rings = useMemo(() => {
+    return [0, 1, 2, 3, 4];
+  }, []);
+
+  useFrame((state) => {
+    if (!groupRef.current || !visible) return;
+    const t = state.clock.elapsedTime * 18.0;
+
+    groupRef.current.children.forEach((child, i) => {
+      const ring = child as THREE.Mesh;
+      const progress = ((t + i * 7.0) % 35.0) / 35.0; // 0 to 1 over 35m
+      const dist = progress * 35.0;
+      const radius = dist * Math.tan(THREE.MathUtils.degToRad(30)); // 60 deg cone
+
+      ring.position.z = -2.15 - dist;
+      ring.scale.set(radius, radius, 1);
+
+      const mat = ring.material as THREE.MeshBasicMaterial;
+      mat.opacity = Math.max(0, (1.0 - progress) * 0.28);
+
+      // Color follows detector state
+      if (dataRef.current?.evaluation.alarmStatus === 'SPOOF_ATTACK_CONFIRMED') {
+        mat.color.set('#ef4444');
+      } else {
+        mat.color.set('#00f2fe');
+      }
+    });
+  });
+
+  if (!visible) return null;
+
+  return (
+    <group ref={groupRef}>
+      {rings.map((i) => (
+        <mesh key={i} position={[0, 0.45, -2.15]}>
+          <ringGeometry args={[0.95, 1.0, 32, 1, 0, Math.PI * 2]} />
+          <meshBasicMaterial color="#00f2fe" transparent opacity={0.2} depthWrite={false} side={THREE.DoubleSide} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// ============================================================================
+// Dynamic Rain Precipitation Particles (Weather Simulation)
+// ============================================================================
+function RainPrecipitation({ active }: { active: boolean }) {
+  const pointsRef = useRef<THREE.Points>(null);
+
+  const [positions, speeds] = useMemo(() => {
+    const pos = new Float32Array(400 * 3);
+    const spd = new Float32Array(400);
+    for (let i = 0; i < 400; i++) {
+      pos[i * 3 + 0] = (seededRandom(i * 3 + 1) - 0.5) * 30;
+      pos[i * 3 + 1] = seededRandom(i * 3 + 2) * 18;
+      pos[i * 3 + 2] = -seededRandom(i * 3 + 3) * 50 + 10;
+      spd[i] = 18 + seededRandom(i * 3 + 4) * 12;
+    }
+    return [pos, spd];
+  }, []);
+
+  useFrame((_, delta) => {
+    if (!pointsRef.current || !active) return;
+    const posAttr = pointsRef.current.geometry.attributes.position as THREE.BufferAttribute;
+    const arr = posAttr.array as Float32Array;
+
+    for (let i = 0; i < 400; i++) {
+      arr[i * 3 + 1] -= speeds[i] * delta;
+      if (arr[i * 3 + 1] < 0) {
+        arr[i * 3 + 1] = 16.0;
+      }
+    }
+    posAttr.needsUpdate = true;
+  });
+
+  if (!active) return null;
+
+  return (
+    <points ref={pointsRef}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
+      </bufferGeometry>
+      <pointsMaterial size={0.12} color="#94a3b8" transparent opacity={0.6} depthWrite={false} />
+    </points>
   );
 }
 
@@ -322,7 +671,6 @@ function RadarCone({
   const targetRingRef = useRef<THREE.Group>(null);
   const ringMeshRef = useRef<THREE.Mesh>(null);
 
-  // Cone dimensions: 35m forward length, 60° FOV (30° half-angle)
   const coneLength = 35.0;
   const coneRadius = coneLength * Math.tan(THREE.MathUtils.degToRad(30)); // ~20.2m
 
@@ -366,7 +714,7 @@ function RadarCone({
 
   return (
     <group>
-      {/* 60° Radar Horizon Wedge / Cone originating from ego front bumper */}
+      {/* 60° Radar Horizon Wedge */}
       <mesh
         ref={coneRef}
         position={[0, 0.45, -2.15 - coneLength / 2]}
@@ -548,11 +896,12 @@ function TargetActor({
 // ============================================================================
 function LidarPointCloud({
   dataRef,
+  manualSpoof,
 }: {
   dataRef: React.MutableRefObject<FrameTelemetry | null>;
+  manualSpoof: boolean;
 }) {
   const pointsRef = useRef<THREE.Points>(null);
-  const flashCountdown = useRef(0);
 
   // Pre-generate 600 unit box surface offsets
   const localOffsets = useMemo(() => {
@@ -564,27 +913,22 @@ function LidarPointCloud({
       const face = Math.floor(seededRandom(i * 7 + 1) * 5);
       let x = 0, y = 0, z = 0;
       if (face === 0) {
-        // Top roof
         x = (seededRandom(i * 7 + 2) - 0.5) * w;
         y = h;
         z = (seededRandom(i * 7 + 3) - 0.5) * l;
       } else if (face === 1) {
-        // Left flank
         x = -w / 2;
         y = seededRandom(i * 7 + 2) * h;
         z = (seededRandom(i * 7 + 3) - 0.5) * l;
       } else if (face === 2) {
-        // Right flank
         x = w / 2;
         y = seededRandom(i * 7 + 2) * h;
         z = (seededRandom(i * 7 + 3) - 0.5) * l;
       } else if (face === 3) {
-        // Front grill
         x = (seededRandom(i * 7 + 2) - 0.5) * w;
         y = seededRandom(i * 7 + 3) * h;
         z = -l / 2;
       } else {
-        // Rear
         x = (seededRandom(i * 7 + 2) - 0.5) * w;
         y = seededRandom(i * 7 + 3) * h;
         z = l / 2;
@@ -603,11 +947,10 @@ function LidarPointCloud({
     const telem = dataRef.current;
     const lidar = telem.measurement.lidar;
     const gt = telem.measurement.groundTruth;
-    const isAttack = telem.measurement.isAttackActive;
+    const isAttack = telem.measurement.isAttackActive || manualSpoof;
     const radar = telem.measurement.radar;
 
-    // Detect spoofing: attack active and radar is missing or contradictory
-    const isSpoof = isAttack && (!radar.isDetected || Math.abs(telem.evaluation.residual) > 1.0);
+    const isSpoof = isAttack && (!radar.isDetected || Math.abs(telem.evaluation.residual) > 1.0 || manualSpoof);
 
     const posAttr = pointsRef.current.geometry.attributes.position as THREE.BufferAttribute;
     const colAttr = pointsRef.current.geometry.attributes.color as THREE.BufferAttribute;
@@ -617,10 +960,8 @@ function LidarPointCloud({
     const targetPos = lidar.isDetected ? lidar.pos : gt.pos;
     const visibleCount = lidar.isDetected ? Math.min(600, Math.max(10, Math.round(lidar.pointDensity * 600))) : 0;
 
-    // Color: Red if spoofed with flash, Blue-Cyan if normal
     let r = 0.02, g = 0.52, b = 0.78; // Blue-gray
     if (isSpoof) {
-      flashCountdown.current = Math.max(flashCountdown.current - 1, 0);
       r = 0.95;
       g = 0.15;
       b = 0.22; // High-alert red
@@ -633,7 +974,6 @@ function LidarPointCloud({
     for (let i = 0; i < 600; i++) {
       if (i < visibleCount) {
         const off = localOffsets[i];
-        // Rotate local offset by target heading
         const rx = off.x * cosH - off.z * sinH;
         const rz = off.x * sinH + off.z * cosH;
 
@@ -646,7 +986,6 @@ function LidarPointCloud({
         colArr[i * 3 + 1] = g;
         colArr[i * 3 + 2] = b;
       } else {
-        // Hide unused points under road
         posArr[i * 3 + 1] = -9999;
       }
     }
@@ -658,14 +997,8 @@ function LidarPointCloud({
   return (
     <points ref={pointsRef}>
       <bufferGeometry>
-        <bufferAttribute
-          attach="attributes-position"
-          args={[positions, 3]}
-        />
-        <bufferAttribute
-          attach="attributes-color"
-          args={[colors, 3]}
-        />
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
+        <bufferAttribute attach="attributes-color" args={[colors, 3]} />
       </bufferGeometry>
       <pointsMaterial
         size={0.16}
@@ -738,11 +1071,10 @@ function KinematicVectors({
     if (vRadRef.current) {
       vRadRef.current.position.set(tx, ty, tz);
       const vRadSpeed = evalResult.vExpectedRad;
-      // LOS direction from target towards ego (or away)
       _scratchVec2.set(evalResult.rHat.x, 0, -evalResult.rHat.y);
       if (Math.abs(vRadSpeed) > 0.05) {
         if (vRadSpeed < 0) {
-          _scratchVec2.negate(); // Closing in
+          _scratchVec2.negate();
         }
         _scratchQuat.setFromUnitVectors(_upVec, _scratchVec2.normalize());
         vRadRef.current.quaternion.copy(_scratchQuat);
@@ -828,7 +1160,6 @@ function GuardrailMultipath({
   const labelRef = useRef<HTMLDivElement>(null);
   const [showMultipath, setShowMultipath] = useState(false);
 
-  // Position of metallic guardrail along the right shoulder: x = 4.4m
   const railX = 4.4;
 
   const multipathLine = useMemo(() => {
@@ -858,15 +1189,12 @@ function GuardrailMultipath({
       const gt = telem.measurement.groundTruth;
       const tx = gt.pos.x;
       const tz = -gt.pos.y;
-      const bounceZ = (-2.1 + tz) / 2; // Midpoint bounce along guardrail
+      const bounceZ = (-2.1 + tz) / 2;
 
       const posAttr = multipathLine.geometry.attributes.position as THREE.BufferAttribute;
       const arr = posAttr.array as Float32Array;
-      // Pt 1: Ego Front Radar (0, 0.45, -2.1)
       arr[0] = 0; arr[1] = 0.45; arr[2] = -2.1;
-      // Pt 2: Guardrail Reflection Bounce (railX, 0.6, bounceZ)
       arr[3] = railX; arr[4] = 0.6; arr[5] = bounceZ;
-      // Pt 3: Target Obstacle (tx, 0.5, tz)
       arr[6] = tx; arr[7] = 0.5; arr[8] = tz;
       posAttr.needsUpdate = true;
     }
@@ -876,12 +1204,10 @@ function GuardrailMultipath({
     <group>
       {/* 3D Metal Guardrail (Beam + Vertical Posts) */}
       <group position={[railX, 0, -20]}>
-        {/* Horizontal W-Beam */}
         <mesh position={[0, 0.65, 0]}>
           <boxGeometry args={[0.15, 0.35, 60]} />
           <meshStandardMaterial color="#94a3b8" metalness={0.8} roughness={0.2} />
         </mesh>
-        {/* Vertical Support Posts every 3m */}
         {Array.from({ length: 20 }).map((_, i) => (
           <mesh key={i} position={[0, 0.35, -28 + i * 3]}>
             <boxGeometry args={[0.12, 0.7, 0.12]} />
@@ -920,7 +1246,7 @@ function GuardrailMultipath({
 }
 
 // ============================================================================
-// Scenario 3: Water Spray Fog Particles near Target Tires (Radar RCS Dropout)
+// Scenario 3: Water Spray Particles (Radar RCS Attenuation)
 // ============================================================================
 function WaterSprayParticles({
   dataRef,
@@ -938,7 +1264,7 @@ function WaterSprayParticles({
       offs.push({
         x: (seededRandom(i * 11 + 1) - 0.5) * 1.8,
         y: seededRandom(i * 11 + 2) * 0.4,
-        z: (seededRandom(i * 11 + 3) - 0.5) * 1.2 + 1.2, // Behind rear tires
+        z: (seededRandom(i * 11 + 3) - 0.5) * 1.2 + 1.2,
         vy: 0.2 + seededRandom(i * 11 + 4) * 0.4,
         vz: 0.5 + seededRandom(i * 11 + 5) * 0.8,
       });
@@ -992,25 +1318,244 @@ function WaterSprayParticles({
 }
 
 // ============================================================================
-// Master 3D Scene Root Component (Mounted inside App.tsx)
+// Mini Range-Doppler Heatmap Card (2D Radar In-HUD Oscilloscope)
+// ============================================================================
+function MiniRangeDopplerHUD({ telemetry }: { telemetry: FrameTelemetry | null }) {
+  if (!telemetry) return null;
+  const radar = telemetry.measurement.radar;
+  const doppler = radar.isDetected ? radar.doppler : 0;
+  const range = telemetry.evaluation.range;
+
+  // Map Doppler (-5 m/s to +5 m/s) -> X (0 to 100%)
+  const xPct = Math.max(0, Math.min(100, ((doppler + 5) / 10) * 100));
+  // Map Range (0m to 35m) -> Y (100% to 0%)
+  const yPct = Math.max(0, Math.min(100, 100 - (range / 35) * 100));
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        bottom: '12px',
+        right: '12px',
+        zIndex: 10,
+        background: 'rgba(15, 23, 42, 0.92)',
+        border: '1px solid #334155',
+        borderRadius: '8px',
+        padding: '8px 10px',
+        backdropFilter: 'blur(8px)',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '4px',
+        pointerEvents: 'auto',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
+        <span style={{ fontWeight: 700, color: '#38bdf8' }}>FMCW RANGE-DOPPLER MAP</span>
+        <span>77 GHz</span>
+      </div>
+
+      <div
+        style={{
+          position: 'relative',
+          width: '140px',
+          height: '75px',
+          background: '#090d16',
+          border: '1px solid #1e293b',
+          borderRadius: '4px',
+          overflow: 'hidden',
+        }}
+      >
+        {/* MTI Clutter Notch Zone (|v_rad| < 0.40 m/s) */}
+        <div
+          style={{
+            position: 'absolute',
+            left: '46%',
+            width: '8%',
+            height: '100%',
+            background: 'rgba(245, 158, 11, 0.25)',
+            borderLeft: '1px dashed rgba(245, 158, 11, 0.5)',
+            borderRight: '1px dashed rgba(245, 158, 11, 0.5)',
+          }}
+          title="MTI Ground Clutter Rejection Notch"
+        />
+
+        {/* Center Zero-Doppler Line */}
+        <div
+          style={{
+            position: 'absolute',
+            left: '50%',
+            width: '1px',
+            height: '100%',
+            background: 'rgba(148, 163, 184, 0.3)',
+          }}
+        />
+
+        {/* Range Horizon Line */}
+        <div
+          style={{
+            position: 'absolute',
+            top: '50%',
+            width: '100%',
+            height: '1px',
+            background: 'rgba(148, 163, 184, 0.2)',
+          }}
+        />
+
+        {/* Target Radar Return Cluster Marker */}
+        {radar.isDetected ? (
+          <div
+            style={{
+              position: 'absolute',
+              left: `${xPct}%`,
+              top: `${yPct}%`,
+              transform: 'translate(-50%, -50%)',
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              background: '#00f2fe',
+              boxShadow: '0 0 8px #00f2fe',
+              border: '1px solid #ffffff',
+              transition: 'all 0.1s ease',
+            }}
+          />
+        ) : (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#ef4444',
+              fontSize: '10px',
+              fontFamily: 'monospace',
+              fontWeight: 700,
+            }}
+          >
+            NO ECHO RETURN
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: '#64748b', fontFamily: 'monospace' }}>
+        <span>-5 m/s</span>
+        <span>0</span>
+        <span>+5 m/s</span>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Master 3D Scene Root Component
 // ============================================================================
 export const Scene3D: React.FC<Scene3DProps> = ({
   telemetry,
   historyTrail: _historyTrail,
   scenarioId,
+  isPlaying,
   onToggleViewMode,
 }) => {
-  // Transfer 20 Hz frame telemetry directly to ref without React state re-rendering
   const frameDataRef = useRef<FrameTelemetry | null>(telemetry);
   useEffect(() => {
     frameDataRef.current = telemetry;
   }, [telemetry]);
 
-  // Camera & Vector Toggles
+  // Shared Closed-Loop Vehicle Dynamics State
+  const egoStateRef = useRef<EgoDynamicState>({
+    speedMs: 16.7, // 60 km/h
+    speedKmh: 60,
+    accelG: 0,
+    pitchRad: 0,
+    travelDist: 0,
+    isBraking: false,
+    stoppingDist: 16.5,
+    followerDist: 12.0,
+    followerRisk: false,
+    manualSpoof: false,
+    rainActive: false,
+  });
+
+  // UI States
   const [cameraMode, setCameraMode] = useState<CameraMode>('topdown');
   const [showVectors, setShowVectors] = useState<boolean>(true);
+  const [showStoppingRibbon, setShowStoppingRibbon] = useState<boolean>(true);
+  const [showWavefronts, setShowWavefronts] = useState<boolean>(true);
+  const [rainActive, setRainActive] = useState<boolean>(false);
+  const [manualSpoof, setManualSpoof] = useState<boolean>(false);
 
-  const isAlarm = telemetry?.evaluation.alarmStatus === 'SPOOF_ATTACK_CONFIRMED';
+  // Live Speedometer State for React Display
+  const [uiSpeedKmh, setUiSpeedKmh] = useState<number>(60);
+  const [uiAccelG, setUiAccelG] = useState<number>(0);
+  const [uiBraking, setUiBraking] = useState<boolean>(false);
+
+  // Closed-Loop Vehicle Dynamics Simulation Loop (60 Hz)
+  useEffect(() => {
+    let animId: number;
+    let lastTime = performance.now();
+
+    const loop = (now: number) => {
+      const dt = Math.min(0.05, (now - lastTime) / 1000.0);
+      lastTime = now;
+
+      const ego = egoStateRef.current;
+      ego.rainActive = rainActive;
+      ego.manualSpoof = manualSpoof;
+
+      const telem = frameDataRef.current;
+      const alarmActive =
+        telem?.evaluation.alarmStatus === 'SPOOF_ATTACK_CONFIRMED' ||
+        telem?.evaluation.detectors.causeAware.emergencyBrakeActive ||
+        manualSpoof;
+
+      // Closed-Loop Dynamic Velocity Actuation
+      if (alarmActive) {
+        // Slam Emergency Brakes
+        ego.isBraking = true;
+        const decel = 8.5; // m/s^2 (~0.87G)
+        ego.speedMs = Math.max(0, ego.speedMs - decel * dt);
+        ego.accelG = -0.87;
+        ego.pitchRad = THREE.MathUtils.lerp(ego.pitchRad, -0.045, dt * 8.0); // Nose dive tilt
+
+        // Follower trailing vehicle closes in (Risk of being rear-ended on false alarms!)
+        ego.followerDist = Math.max(3.2, ego.followerDist - 5.5 * dt);
+        ego.followerRisk = ego.followerDist < 5.0 && !telem?.measurement.isAttackActive;
+      } else {
+        // Accelerate back up to cruising speed (60 km/h)
+        ego.isBraking = false;
+        const accel = 3.0; // m/s^2 (~0.30G)
+        ego.speedMs = Math.min(16.7, ego.speedMs + accel * dt);
+        ego.accelG = ego.speedMs < 16.5 ? 0.30 : 0.0;
+        ego.pitchRad = THREE.MathUtils.lerp(ego.pitchRad, 0.0, dt * 5.0); // Reset level pitch
+
+        // Follower vehicle recovers safe buffer
+        ego.followerDist = Math.min(12.0, ego.followerDist + 2.5 * dt);
+        ego.followerRisk = false;
+      }
+
+      ego.speedKmh = ego.speedMs * 3.6;
+      ego.stoppingDist = (ego.speedMs * ego.speedMs) / (2 * 0.85 * 9.81) + ego.speedMs * 0.25;
+
+      if (isPlaying !== false) {
+        ego.travelDist += ego.speedMs * dt;
+      }
+
+      // Sync with HUD periodically
+      if (Math.round(ego.speedKmh) !== Math.round(uiSpeedKmh)) {
+        setUiSpeedKmh(ego.speedKmh);
+        setUiAccelG(ego.accelG);
+        setUiBraking(ego.isBraking);
+      }
+
+      animId = requestAnimationFrame(loop);
+    };
+
+    animId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(animId);
+  }, [isPlaying, rainActive, manualSpoof, uiSpeedKmh]);
+
+  const isAlarm = telemetry?.evaluation.alarmStatus === 'SPOOF_ATTACK_CONFIRMED' || manualSpoof;
 
   return (
     <div
@@ -1025,7 +1570,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
         background: '#f8fafc',
       }}
     >
-      {/* 3D Viewport Header & Interactive Toolbar */}
+      {/* 3D Viewport Header Toolbar */}
       <div
         style={{
           position: 'absolute',
@@ -1050,7 +1595,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
-              background: 'rgba(255, 255, 255, 0.9)',
+              background: 'rgba(255, 255, 255, 0.92)',
               padding: '4px 10px',
               borderRadius: '6px',
               border: '1px solid #cbd5e1',
@@ -1061,6 +1606,27 @@ export const Scene3D: React.FC<Scene3DProps> = ({
             <Box size={14} color="#0284c7" />
             3D SENSOR DIGITAL TWIN
           </span>
+
+          {/* Dynamic Closed-Loop Speedometer Pill */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: uiBraking ? '#fff1f2' : '#f0fdf4',
+              color: uiBraking ? '#be123c' : '#15803d',
+              border: `1px solid ${uiBraking ? '#fecdd3' : '#bbf7d0'}`,
+              padding: '3px 8px',
+              borderRadius: '6px',
+              fontSize: '0.72rem',
+              fontFamily: 'monospace',
+              fontWeight: 700,
+            }}
+          >
+            <Gauge size={13} color={uiBraking ? '#e11d48' : '#16a34a'} />
+            <span>{uiSpeedKmh.toFixed(0)} km/h</span>
+            <span style={{ fontSize: '0.65rem', opacity: 0.8 }}>({uiAccelG.toFixed(2)}G)</span>
+          </div>
         </div>
 
         {/* Center: Camera Mode Selector Toolbar */}
@@ -1092,11 +1658,10 @@ export const Scene3D: React.FC<Scene3DProps> = ({
               display: 'flex',
               alignItems: 'center',
               gap: '4px',
-              transition: 'all 0.15s ease',
             }}
           >
             <Camera size={12} />
-            Top-Down (BEV)
+            Top-Down
           </button>
 
           <button
@@ -1113,7 +1678,6 @@ export const Scene3D: React.FC<Scene3DProps> = ({
               display: 'flex',
               alignItems: 'center',
               gap: '4px',
-              transition: 'all 0.15s ease',
             }}
           >
             <Eye size={12} />
@@ -1134,15 +1698,14 @@ export const Scene3D: React.FC<Scene3DProps> = ({
               display: 'flex',
               alignItems: 'center',
               gap: '4px',
-              transition: 'all 0.15s ease',
             }}
           >
             <RotateCw size={12} />
-            Free Orbit
+            Orbit
           </button>
         </div>
 
-        {/* Right: Vector Toggle & 2D/3D Mode Switch */}
+        {/* Right: Simulation Enhancements Toggles & 2D/3D Mode Switch */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', pointerEvents: 'auto' }}>
           <button
             onClick={() => setShowVectors(!showVectors)}
@@ -1158,6 +1721,71 @@ export const Scene3D: React.FC<Scene3DProps> = ({
           >
             <Compass size={13} color={showVectors ? '#0284c7' : '#94a3b8'} />
             Vectors
+          </button>
+
+          <button
+            onClick={() => setShowStoppingRibbon(!showStoppingRibbon)}
+            className="btn-secondary"
+            style={{
+              fontSize: '0.72rem',
+              padding: '4px 8px',
+              background: showStoppingRibbon ? '#ecfdf5' : '#ffffff',
+              color: showStoppingRibbon ? '#047857' : '#64748b',
+              border: '1px solid #cbd5e1',
+            }}
+            title="Toggle Dynamic AEB Stopping Ribbon"
+          >
+            <Activity size={13} color={showStoppingRibbon ? '#10b981' : '#94a3b8'} />
+            Ribbon
+          </button>
+
+          <button
+            onClick={() => setShowWavefronts(!showWavefronts)}
+            className="btn-secondary"
+            style={{
+              fontSize: '0.72rem',
+              padding: '4px 8px',
+              background: showWavefronts ? '#f5f3ff' : '#ffffff',
+              color: showWavefronts ? '#6d28d9' : '#64748b',
+              border: '1px solid #cbd5e1',
+            }}
+            title="Toggle FMCW Radar Radiating Waves"
+          >
+            <Radio size={13} color={showWavefronts ? '#7c3aed' : '#94a3b8'} />
+            Radar Waves
+          </button>
+
+          <button
+            onClick={() => setRainActive(!rainActive)}
+            className="btn-secondary"
+            style={{
+              fontSize: '0.72rem',
+              padding: '4px 8px',
+              background: rainActive ? '#eff6ff' : '#ffffff',
+              color: rainActive ? '#1d4ed8' : '#64748b',
+              border: '1px solid #cbd5e1',
+            }}
+            title="Toggle Weather Rain & Wet Road"
+          >
+            <CloudRain size={13} color={rainActive ? '#2563eb' : '#94a3b8'} />
+            Rain
+          </button>
+
+          <button
+            onClick={() => setManualSpoof(!manualSpoof)}
+            className="btn-secondary"
+            style={{
+              fontSize: '0.72rem',
+              padding: '4px 8px',
+              background: manualSpoof ? '#fff1f2' : '#ffffff',
+              color: manualSpoof ? '#e11d48' : '#64748b',
+              border: `1px solid ${manualSpoof ? '#fecdd3' : '#cbd5e1'}`,
+              fontWeight: manualSpoof ? 700 : 500,
+            }}
+            title="Manual Threat Injection Sandbox Override"
+          >
+            <Zap size={13} color={manualSpoof ? '#e11d48' : '#94a3b8'} />
+            {manualSpoof ? 'Spoof Active' : 'Inject Spoof'}
           </button>
 
           {onToggleViewMode && (
@@ -1207,14 +1835,16 @@ export const Scene3D: React.FC<Scene3DProps> = ({
             fontSize: '0.78rem',
             letterSpacing: '0.04em',
             border: '1px solid #fecdd3',
-            animation: 'pulse 1s infinite alternate',
             pointerEvents: 'none',
           }}
         >
           <ShieldAlert size={16} color="#ffffff" />
-          <span>SPOOF ATTACK CONFIRMED — AUTOMATIC BRAKE ENGAGED</span>
+          <span>SPOOF ATTACK CONFIRMED — AUTOMATIC EMERGENCY BRAKE ENGAGED</span>
         </div>
       )}
+
+      {/* Mini Range-Doppler Oscilloscope Radar Display */}
+      <MiniRangeDopplerHUD telemetry={telemetry} />
 
       {/* R3F High-Performance WebGL Canvas */}
       <Canvas
@@ -1247,32 +1877,51 @@ export const Scene3D: React.FC<Scene3DProps> = ({
         {/* Interactive Smooth Damped Camera Controller */}
         <CameraController cameraMode={cameraMode} setCameraMode={setCameraMode} />
 
-        {/* 1. Ground & Road */}
-        <EnvironmentRoad />
+        {/* 1. Ground & Scrolling Asphalt Road */}
+        <EnvironmentRoad egoStateRef={egoStateRef} />
 
-        {/* 2. Ego Autonomous Car with Sensors */}
-        <EgoCar />
+        {/* 2. Ego Autonomous Car with Suspension Pitch & Skid Marks */}
+        <EgoCar egoStateRef={egoStateRef} />
 
-        {/* 3. Trust Score Security Shield */}
+        {/* 3. Virtual Follower Car (Rear-End Collision Risk on False Alarms) */}
+        <FollowerCar egoStateRef={egoStateRef} />
+
+        {/* 4. Projected AEB Stopping Distance Ribbon */}
+        <StoppingDistanceRibbon
+          egoStateRef={egoStateRef}
+          dataRef={frameDataRef}
+          visible={showStoppingRibbon}
+        />
+
+        {/* 5. EKF Covariance Uncertainty Ellipse at Target Location */}
+        <EKFCovarianceEllipse dataRef={frameDataRef} />
+
+        {/* 6. Trust Score Security Shield */}
         <TrustShield dataRef={frameDataRef} />
 
-        {/* 4. Radar 60° Translucent Horizon Beam */}
+        {/* 7. Radar 60° Translucent Horizon Beam */}
         <RadarCone dataRef={frameDataRef} />
 
-        {/* 5. Target Obstacle & EKF State Estimation Ghost */}
+        {/* 8. FMCW Radar Radiating Electromagnetic Wavefront Rings */}
+        <RadarWavefrontRings dataRef={frameDataRef} visible={showWavefronts} />
+
+        {/* 9. Target Obstacle & EKF State Estimation Ghost */}
         <TargetActor dataRef={frameDataRef} scenarioId={scenarioId} />
 
-        {/* 6. Pre-Allocated 600-Point LiDAR Cloud */}
-        <LidarPointCloud dataRef={frameDataRef} />
+        {/* 10. Pre-Allocated 600-Point LiDAR Cloud */}
+        <LidarPointCloud dataRef={frameDataRef} manualSpoof={manualSpoof} />
 
-        {/* 7. Kinematic Total, Radial, and Tangential Vector Decomposition */}
+        {/* 11. Kinematic Total, Radial, and Tangential Vector Decomposition */}
         <KinematicVectors dataRef={frameDataRef} visible={showVectors} />
 
-        {/* 8. Scenario 8: Guardrail & Multipath Ghost Polyline */}
+        {/* 12. Scenario 8: Guardrail & Multipath Ghost Polyline */}
         <GuardrailMultipath dataRef={frameDataRef} scenarioId={scenarioId} />
 
-        {/* 9. Scenario 3: Water Spray Particles (Radar RCS Attenuation) */}
+        {/* 13. Scenario 3: Water Spray Particles (Radar RCS Attenuation) */}
         <WaterSprayParticles dataRef={frameDataRef} scenarioId={scenarioId} />
+
+        {/* 14. Weather Simulation Precipitation Rain */}
+        <RainPrecipitation active={rainActive} />
       </Canvas>
     </div>
   );

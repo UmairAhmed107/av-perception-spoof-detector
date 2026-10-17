@@ -113,6 +113,12 @@ export interface DetectorVerdict {
   trueDetectionsCount: number;
 }
 
+export interface MLDetectorVerdict extends DetectorVerdict {
+  spoofProbability: number;
+  predictedCause: string;
+  causeConfidence: number;
+}
+
 export interface PipelineEvaluation {
   // Line of sight
   rHat: Vector2D;
@@ -146,12 +152,13 @@ export interface PipelineEvaluation {
   trustDelta: number;
   consecutiveUnattributed: number;
   alarmStatus: AlarmStatus;
-  // Concurrent 4-Detector benchmark
+  // Concurrent Detector benchmark (Physics-informed + ML)
   detectors: {
     naiveStrict: DetectorVerdict;
     naiveLoose: DetectorVerdict;
     strictPersist: DetectorVerdict;
     causeAware: DetectorVerdict;
+    mlRandomForest?: MLDetectorVerdict;
   };
 }
 

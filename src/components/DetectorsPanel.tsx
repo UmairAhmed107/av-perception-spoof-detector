@@ -5,7 +5,7 @@
 
 import React from 'react';
 import type { FrameTelemetry } from '../types';
-import { Shield, AlertOctagon, CheckCircle, ShieldAlert, AlertTriangle } from 'lucide-react';
+import { Shield, AlertOctagon, CheckCircle, ShieldAlert, AlertTriangle, Cpu } from 'lucide-react';
 
 interface DetectorsPanelProps {
   telemetry: FrameTelemetry | null;
@@ -40,6 +40,16 @@ export const DetectorsPanel: React.FC<DetectorsPanelProps> = ({ telemetry }) => 
       tag: 'OPTIMAL: 0% False Alarms, 100% Catch',
       icon: CheckCircle,
     },
+    ...(detectors.mlRandomForest
+      ? [
+          {
+            data: detectors.mlRandomForest,
+            type: 'ml-random-forest',
+            tag: `ML: P(Spoof)=${(detectors.mlRandomForest.spoofProbability * 100).toFixed(1)}% | ${detectors.mlRandomForest.predictedCause}`,
+            icon: Cpu,
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -65,7 +75,7 @@ export const DetectorsPanel: React.FC<DetectorsPanelProps> = ({ telemetry }) => 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Shield size={18} color="var(--cyan-primary)" />
           <span style={{ fontWeight: 700, fontSize: '0.9rem', color: '#0f172a', letterSpacing: '0.02em' }}>
-            CONCURRENT 4-DETECTOR DEFENSE BENCHMARK
+            CONCURRENT 5-DETECTOR DEFENSE BENCHMARK (PHYSICS + ML)
           </span>
           <span className="badge badge-cyan">REAL-TIME COMPARISON</span>
         </div>
@@ -87,15 +97,16 @@ export const DetectorsPanel: React.FC<DetectorsPanelProps> = ({ telemetry }) => 
           const det = item.data;
           const isBrake = det.emergencyBrakeActive;
           const isCauseAware = item.type === 'cause-aware';
+          const isML = item.type === 'ml-random-forest';
 
           let cardBorder = '#e2e8f0';
           let cardBg = '#ffffff';
           let badgeClass = 'badge-cyan';
 
           if (isBrake) {
-            cardBorder = isCauseAware ? '#a7f3d0' : '#fecdd3';
-            cardBg = isCauseAware ? '#f0fdf4' : '#fff1f2';
-            badgeClass = isCauseAware ? 'badge-emerald' : 'badge-rose';
+            cardBorder = isCauseAware ? '#a7f3d0' : isML ? '#ddd6fe' : '#fecdd3';
+            cardBg = isCauseAware ? '#f0fdf4' : isML ? '#faf5ff' : '#fff1f2';
+            badgeClass = isCauseAware ? 'badge-emerald' : isML ? 'badge-cyan' : 'badge-rose';
           } else if (det.state === 'UNDETECTED_ATTACK') {
             cardBorder = '#fecdd3';
             cardBg = '#fff1f2';
@@ -104,6 +115,10 @@ export const DetectorsPanel: React.FC<DetectorsPanelProps> = ({ telemetry }) => 
             cardBg = '#fffbeb';
             cardBorder = '#fde68a';
             badgeClass = 'badge-amber';
+          } else if (isML) {
+            cardBorder = '#e9d5ff';
+            cardBg = '#faf5ff';
+            badgeClass = 'badge-cyan';
           }
 
           return (
@@ -118,13 +133,13 @@ export const DetectorsPanel: React.FC<DetectorsPanelProps> = ({ telemetry }) => 
                 flexDirection: 'column',
                 gap: '8px',
                 transition: 'all 0.2s ease',
-                boxShadow: isBrake && !isCauseAware ? '0 4px 12px rgba(225, 29, 72, 0.15)' : 'var(--shadow-card)',
+                boxShadow: isBrake && !isCauseAware && !isML ? '0 4px 12px rgba(225, 29, 72, 0.15)' : 'var(--shadow-card)',
               }}
             >
               {/* Card Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: '0.85rem', color: isCauseAware ? '#0284c7' : '#0f172a' }}>
+                  <div style={{ fontWeight: 700, fontSize: '0.85rem', color: isCauseAware ? '#0284c7' : isML ? '#7c3aed' : '#0f172a' }}>
                     {det.name}
                   </div>
                   <div style={{ fontSize: '0.68rem', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
@@ -137,8 +152,8 @@ export const DetectorsPanel: React.FC<DetectorsPanelProps> = ({ telemetry }) => 
                     width: '10px',
                     height: '10px',
                     borderRadius: '50%',
-                    background: isBrake ? '#e11d48' : '#059669',
-                    boxShadow: isBrake ? '0 0 6px #e11d48' : '0 0 4px #059669',
+                    background: isBrake ? (isML ? '#7c3aed' : '#e11d48') : '#059669',
+                    boxShadow: isBrake ? (isML ? '0 0 6px #7c3aed' : '0 0 6px #e11d48') : '0 0 4px #059669',
                   }}
                   title={isBrake ? 'Emergency Brake Engaged' : 'Normal Driving'}
                 />
@@ -150,6 +165,56 @@ export const DetectorsPanel: React.FC<DetectorsPanelProps> = ({ telemetry }) => 
                   {det.statusText}
                 </span>
               </div>
+
+              {/* ML-Specific Metrics: Spoof Probability & Predicted Cause */}
+              {isML && 'spoofProbability' in det && (
+                <div
+                  style={{
+                    background: '#ffffff',
+                    border: '1px solid #e9d5ff',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '8px 10px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                    fontSize: '0.74rem',
+                    fontFamily: 'var(--font-mono)',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: '#64748b', fontWeight: 500 }}>Spoof Probability:</span>
+                    <strong style={{ color: (det as any).spoofProbability >= 0.5 ? '#e11d48' : '#059669', fontSize: '0.8rem' }}>
+                      {(((det as any).spoofProbability ?? 0) * 100).toFixed(1)}%
+                    </strong>
+                  </div>
+                  <div style={{ width: '100%', height: '4px', background: '#f1f5f9', borderRadius: '2px', overflow: 'hidden' }}>
+                    <div
+                      style={{
+                        width: `${Math.min(100, Math.max(0, ((det as any).spoofProbability ?? 0) * 100))}%`,
+                        height: '100%',
+                        background: (det as any).spoofProbability >= 0.5 ? 'linear-gradient(90deg, #f59e0b, #e11d48)' : '#10b981',
+                        transition: 'width 0.2s ease',
+                      }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
+                    <span style={{ color: '#64748b', fontWeight: 500 }}>Predicted Cause:</span>
+                    <span
+                      style={{
+                        background: '#f3e8ff',
+                        color: '#6b21a8',
+                        border: '1px solid #d8b4fe',
+                        borderRadius: '4px',
+                        fontSize: '0.68rem',
+                        fontWeight: 600,
+                        padding: '1px 6px',
+                      }}
+                    >
+                      {(det as any).predictedCause}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Brake Action Alert Bar */}
               <div

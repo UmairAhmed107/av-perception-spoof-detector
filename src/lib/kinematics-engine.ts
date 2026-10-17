@@ -13,6 +13,7 @@ import {
   EKFState,
   SimulationParams,
 } from '../types';
+import { extractMLFeatures, evaluateMLDetector } from './ml-detector';
 
 /**
  * High-speed Gaussian noise generator using Box-Muller transform
@@ -128,6 +129,7 @@ export interface EvaluationHistory {
     naiveLoose: { falseAlarms: number; trueDetections: number };
     strictPersist: { falseAlarms: number; trueDetections: number };
     causeAware: { falseAlarms: number; trueDetections: number };
+    mlRandomForest: { falseAlarms: number; trueDetections: number };
   };
 }
 
@@ -146,6 +148,7 @@ export function createInitialHistory(): EvaluationHistory {
       naiveLoose: { falseAlarms: 0, trueDetections: 0 },
       strictPersist: { falseAlarms: 0, trueDetections: 0 },
       causeAware: { falseAlarms: 0, trueDetections: 0 },
+      mlRandomForest: { falseAlarms: 0, trueDetections: 0 },
     },
   };
 }
@@ -613,6 +616,24 @@ export function evaluateFrame(
         falseAlarmsCount: history.cumulativeStats.causeAware.falseAlarms,
         trueDetectionsCount: history.cumulativeStats.causeAware.trueDetections,
       },
+      mlRandomForest: evaluateMLDetector(
+        extractMLFeatures(
+          residual,
+          sigmaTotal,
+          mahalanobisDist,
+          vExpectedRad,
+          cosPhi,
+          totalSpeed,
+          measurement.lidar.pointDensity,
+          measurement.radar.snrDb,
+          measurement.radar.isDetected,
+          measurement.radar.trackAge,
+          rangeElong,
+          history.trustScore
+        ),
+        isAttackActive,
+        history.cumulativeStats.mlRandomForest ?? (history.cumulativeStats.mlRandomForest = { falseAlarms: 0, trueDetections: 0 })
+      ),
     },
   };
 }

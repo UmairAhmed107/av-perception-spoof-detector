@@ -27,11 +27,14 @@ async function main() {
       causeAwareFAR: stats.detectors.cause_aware.falseAlarmRate,
       causeAwareDet: stats.detectors.cause_aware.detectionRate,
       causeAwareMTTD: stats.detectors.cause_aware.mttdSeconds,
+      mlFAR: stats.detectors.ml_random_forest?.falseAlarmRate ?? 0,
+      mlDet: stats.detectors.ml_random_forest?.detectionRate ?? 0,
+      mlMTTD: stats.detectors.ml_random_forest?.mttdSeconds ?? 0,
     });
   }
 
-  console.log('| Scenario | Type | Naive Strict | Naive Loose | Strict + Persist (N=3) | Proposed Cause-Aware |');
-  console.log('|---|---|---|---|---|---|');
+  console.log('| Scenario | Type | Naive Strict | Naive Loose | Strict + Persist (N=3) | Proposed Cause-Aware | ML (Random Forest) |');
+  console.log('|---|---|---|---|---|---|---|');
 
   for (const r of results) {
     const formatDet = (far: number, det: number, mttd: number, isAttack: boolean) => {
@@ -57,7 +60,18 @@ async function main() {
         : `**FAILS** (${r.causeAwareFAR.toFixed(1)}% FAR)`;
     }
 
-    console.log(`| **${r.title}** | ${r.threat} | ${strictStr} | ${looseStr} | ${persistStr} | ${causeStr} |`);
+    let mlStr = '';
+    if (isAttack) {
+      mlStr = r.mlDet >= 90.0
+        ? `**OPTIMAL** (${r.mlDet.toFixed(1)}% Det, ${r.mlMTTD.toFixed(2)}s)`
+        : `Detected (${r.mlDet.toFixed(1)}% Det, ${r.mlMTTD.toFixed(2)}s)`;
+    } else {
+      mlStr = r.mlFAR < 2.0
+        ? `**OPTIMAL** (${r.mlFAR.toFixed(1)}% FAR)`
+        : `Passes (${r.mlFAR.toFixed(1)}% FAR)`;
+    }
+
+    console.log(`| **${r.title}** | ${r.threat} | ${strictStr} | ${looseStr} | ${persistStr} | ${causeStr} | ${mlStr} |`);
   }
 }
 

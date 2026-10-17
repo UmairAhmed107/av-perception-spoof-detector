@@ -65,6 +65,14 @@ export async function runMonteCarloTrials(
       detectedTrials: 0,
       timeToDetectFramesSum: 0,
     },
+    ml_random_forest: {
+      name: 'ML (Random Forest)',
+      benignFrames: 0,
+      falseAlarmFrames: 0,
+      attackTrials: 0,
+      detectedTrials: 0,
+      timeToDetectFramesSum: 0,
+    },
   };
 
   const batchSize = Math.max(10, Math.floor(numTrials / 20));
@@ -92,11 +100,13 @@ export async function runMonteCarloTrials(
     let detectedNaiveLoose = false;
     let detectedStrictPersist = false;
     let detectedCauseAware = false;
+    let detectedML = false;
 
     let mttdNaiveStrict = -1;
     let mttdNaiveLoose = -1;
     let mttdStrictPersist = -1;
     let mttdCauseAware = -1;
+    let mttdML = -1;
 
     for (let f = 0; f < totalFrames; f++) {
       const timeSec = f * dt;
@@ -142,6 +152,7 @@ export async function runMonteCarloTrials(
         detectorAccumulators.naive_loose.benignFrames++;
         detectorAccumulators.strict_persist.benignFrames++;
         detectorAccumulators.cause_aware.benignFrames++;
+        detectorAccumulators.ml_random_forest.benignFrames++;
 
         if (evalResult.detectors.naiveStrict.alarmTriggered) {
           detectorAccumulators.naive_strict.falseAlarmFrames++;
@@ -154,6 +165,9 @@ export async function runMonteCarloTrials(
         }
         if (evalResult.detectors.causeAware.alarmTriggered) {
           detectorAccumulators.cause_aware.falseAlarmFrames++;
+        }
+        if (evalResult.detectors.mlRandomForest?.alarmTriggered) {
+          detectorAccumulators.ml_random_forest.falseAlarmFrames++;
         }
       } else {
         // Attack frame: evaluate detection rate & MTTD
@@ -187,6 +201,13 @@ export async function runMonteCarloTrials(
           detectedCauseAware = true;
           mttdCauseAware = framesSinceAttack;
         }
+        if (
+          evalResult.detectors.mlRandomForest?.alarmTriggered &&
+          !detectedML
+        ) {
+          detectedML = true;
+          mttdML = framesSinceAttack;
+        }
       }
     }
 
@@ -196,6 +217,7 @@ export async function runMonteCarloTrials(
       detectorAccumulators.naive_loose.attackTrials++;
       detectorAccumulators.strict_persist.attackTrials++;
       detectorAccumulators.cause_aware.attackTrials++;
+      detectorAccumulators.ml_random_forest.attackTrials++;
 
       if (detectedNaiveStrict) {
         detectorAccumulators.naive_strict.detectedTrials++;
@@ -217,6 +239,11 @@ export async function runMonteCarloTrials(
         detectorAccumulators.cause_aware.timeToDetectFramesSum +=
           mttdCauseAware;
       }
+      if (detectedML) {
+        detectorAccumulators.ml_random_forest.detectedTrials++;
+        detectorAccumulators.ml_random_forest.timeToDetectFramesSum +=
+          mttdML;
+      }
     }
   }
 
@@ -237,6 +264,7 @@ export async function runMonteCarloTrials(
     'naive_loose',
     'strict_persist',
     'cause_aware',
+    'ml_random_forest',
   ] as const;
 
   for (const key of keys) {

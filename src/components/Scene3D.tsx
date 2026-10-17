@@ -55,7 +55,7 @@ type CameraMode = 'topdown' | 'chase' | 'orbit';
 // ============================================================================
 // Autonomy Maneuver Decision Engine (GO vs STOP Policy)
 // ============================================================================
-export interface ManeuverDecision {
+interface ManeuverDecision {
   action: 'GO' | 'STOP' | 'SUPPRESS_AND_GO' | 'CRASH_RISK';
   title: string;
   subtitle: string;
@@ -65,7 +65,7 @@ export interface ManeuverDecision {
   borderColor: string;
 }
 
-export function computeManeuverDecision(
+function computeManeuverDecision(
   scenarioId: ScenarioId | undefined,
   telemetry: FrameTelemetry | null,
   isProtectedMode: boolean,

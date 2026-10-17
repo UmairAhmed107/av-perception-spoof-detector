@@ -98,7 +98,3 @@ npm run build
 ```
 
 ---
-
-## 📄 License
-
-MIT License. Designed for Autonomous Vehicle Perception Integrity and Cyber-Physical Security Research.

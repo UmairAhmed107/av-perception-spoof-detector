@@ -23,6 +23,8 @@ import {
   Zap,
   Activity,
   AlertOctagon,
+  ShieldCheck,
+  CheckCircle2,
 } from 'lucide-react';
 
 // ============================================================================
@@ -49,6 +51,290 @@ export interface Scene3DProps {
 }
 
 type CameraMode = 'topdown' | 'chase' | 'orbit';
+
+// ============================================================================
+// Autonomy Maneuver Decision Engine (GO vs STOP Policy)
+// ============================================================================
+export interface ManeuverDecision {
+  action: 'GO' | 'STOP' | 'SUPPRESS_AND_GO' | 'CRASH_RISK';
+  title: string;
+  subtitle: string;
+  shouldBrake: boolean;
+  color: string;
+  bg: string;
+  borderColor: string;
+}
+
+export function computeManeuverDecision(
+  scenarioId: ScenarioId | undefined,
+  telemetry: FrameTelemetry | null,
+  isProtectedMode: boolean,
+  manualSpoof: boolean
+): ManeuverDecision {
+  if (manualSpoof) {
+    return {
+      action: 'STOP',
+      title: 'MANUAL THREAT INJECTED: AEB EMERGENCY STOP (0 km/h)',
+      subtitle: 'Simulating emergency brake stop and trailing vehicle hazard',
+      shouldBrake: true,
+      color: '#ffffff',
+      bg: 'rgba(225, 29, 72, 0.95)',
+      borderColor: '#fecdd3',
+    };
+  }
+
+  const causeAwareAlarm =
+    telemetry?.evaluation.detectors.causeAware.alarmTriggered ||
+    telemetry?.evaluation.detectors.causeAware.emergencyBrakeActive ||
+    telemetry?.evaluation.alarmStatus === 'SPOOF_ATTACK_CONFIRMED';
+  const naiveStrictAlarm =
+    telemetry?.evaluation.detectors.naiveStrict.alarmTriggered ||
+    telemetry?.evaluation.detectors.naiveStrict.emergencyBrakeActive ||
+    false;
+  const isAttackActive = telemetry?.measurement.isAttackActive ?? false;
+
+  // --------------------------------------------------------------------------
+  // Mode A: NAIVE BASELINE AV (No Cross-Modal Cause-Aware Defense)
+  // --------------------------------------------------------------------------
+  if (!isProtectedMode) {
+    if (scenarioId === 'scen_1_cyclist_tangential') {
+      if (naiveStrictAlarm) {
+        return {
+          action: 'STOP',
+          title: 'NAIVE AV: FALSE EMERGENCY BRAKE (0 km/h)',
+          subtitle: 'Panicked when radar dropped in clutter notch (|v_rad| < 0.4 m/s)! Unsafe halt!',
+          shouldBrake: true,
+          color: '#ffffff',
+          bg: 'rgba(225, 29, 72, 0.95)',
+          borderColor: '#fecdd3',
+        };
+      }
+    }
+
+    if (scenarioId === 'scen_2_phantom_spoof' || scenarioId === 'scen_6_phantom_tangential') {
+      if (isAttackActive) {
+        return {
+          action: 'STOP',
+          title: 'NAIVE AV: PHANTOM BRAKE (0 km/h)',
+          subtitle: 'Tricked by laser ghost obstacle on empty highway! Tailgater crash hazard!',
+          shouldBrake: true,
+          color: '#ffffff',
+          bg: 'rgba(225, 29, 72, 0.95)',
+          borderColor: '#fecdd3',
+        };
+      }
+    }
+
+    if (scenarioId === 'scen_4_loose_bypass') {
+      return {
+        action: 'CRASH_RISK',
+        title: 'NAIVE AV: BLIND CRUISE (+1.35 m/s Gate Bypass)',
+        subtitle: 'Loose gate bypassed! Failed to detect closing distance — High collision risk!',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(194, 65, 12, 0.95)',
+        borderColor: '#fed7aa',
+      };
+    }
+
+    if (scenarioId === 'scen_5_slow_creep') {
+      return {
+        action: 'CRASH_RISK',
+        title: 'NAIVE AV: DELAYED BRAKE (Ramped Drift Missed)',
+        subtitle: 'Single-frame threshold evaded by gradual +0.40 m/s² creep',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(217, 119, 6, 0.95)',
+        borderColor: '#fde68a',
+      };
+    }
+
+    if (scenarioId === 'scen_7_pulsed_spoof') {
+      return {
+        action: 'CRASH_RISK',
+        title: 'NAIVE AV: RESET LOOP (3 Hz Anti-Persistence)',
+        subtitle: 'Integer persistence counter resets to 0 every off frame — attack undetected!',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(217, 119, 6, 0.95)',
+        borderColor: '#fde68a',
+      };
+    }
+
+    if (scenarioId === 'scen_8_guardrail_multipath') {
+      if (naiveStrictAlarm) {
+        return {
+          action: 'STOP',
+          title: 'NAIVE AV: FALSE BRAKE ON GUARDRAIL GHOST',
+          subtitle: 'Panicked on metallic RF reflection (+1.8 m/s Doppler ghost)',
+          shouldBrake: true,
+          color: '#ffffff',
+          bg: 'rgba(225, 29, 72, 0.95)',
+          borderColor: '#fecdd3',
+        };
+      }
+    }
+
+    return {
+      action: 'GO',
+      title: 'NAIVE AV: HIGHWAY CRUISE (60 km/h)',
+      subtitle: 'Tracking vehicle without cross-modal integrity verification',
+      shouldBrake: false,
+      color: '#ffffff',
+      bg: 'rgba(15, 23, 42, 0.92)',
+      borderColor: '#334155',
+    };
+  }
+
+  // --------------------------------------------------------------------------
+  // Mode B: PROTECTED AV (Cause-Aware + ML Guard Active)
+  // --------------------------------------------------------------------------
+  switch (scenarioId) {
+    case 'scen_1_cyclist_tangential':
+      return {
+        action: 'GO',
+        title: 'PROTECTED AV: YIELD & PROCEED (60 km/h)',
+        subtitle: 'Benign clutter notch recognized (|v_rad| < 0.40 m/s) — Zero false brakes!',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(16, 185, 129, 0.95)',
+        borderColor: '#a7f3d0',
+      };
+
+    case 'scen_2_phantom_spoof':
+    case 'scen_6_phantom_tangential':
+      if (isAttackActive) {
+        return {
+          action: 'SUPPRESS_AND_GO',
+          title: 'PROTECTED AV: PHANTOM REJECTED → KEEP GOING (60 km/h)',
+          subtitle: '77 GHz Radar confirms 0 echo on tarmac. Ghost suppressed, rear collision avoided!',
+          shouldBrake: false, // CONTINUES MOVING! Does NOT phantom brake!
+          color: '#ffffff',
+          bg: 'rgba(2, 132, 199, 0.95)',
+          borderColor: '#bae6fd',
+        };
+      }
+      return {
+        action: 'GO',
+        title: 'PROTECTED AV: CRUISE (60 km/h)',
+        subtitle: 'Radar & LiDAR cross-verified — Path clear',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(16, 185, 129, 0.95)',
+        borderColor: '#a7f3d0',
+      };
+
+    case 'scen_3_rcs_dropout':
+      return {
+        action: 'GO',
+        title: 'PROTECTED AV: SMOOTH CRUISE (60 km/h)',
+        subtitle: 'Pavement water spray multipath identified — 0% false alarms',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(16, 185, 129, 0.95)',
+        borderColor: '#a7f3d0',
+      };
+
+    case 'scen_4_loose_bypass':
+      if (causeAwareAlarm) {
+        return {
+          action: 'STOP',
+          title: 'PROTECTED AV: AEB EMERGENCY STOP (0 km/h)',
+          subtitle: '+1.35 m/s velocity spoof detected! Brakes engaged, lead car crash prevented!',
+          shouldBrake: true, // BRAKES TO PREVENT FATAL CRASH!
+          color: '#ffffff',
+          bg: 'rgba(225, 29, 72, 0.95)',
+          borderColor: '#fecdd3',
+        };
+      }
+      return {
+        action: 'GO',
+        title: 'PROTECTED AV: TRACKING LEAD VEHICLE',
+        subtitle: 'Strict gating active — Monitoring headway',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(16, 185, 129, 0.95)',
+        borderColor: '#a7f3d0',
+      };
+
+    case 'scen_5_slow_creep':
+      if (causeAwareAlarm) {
+        return {
+          action: 'STOP',
+          title: 'PROTECTED AV: CONTROLLED SAFE DECELERATION',
+          subtitle: 'Ramped velocity drift detected by trust accumulator — Safe headway preserved!',
+          shouldBrake: true,
+          color: '#ffffff',
+          bg: 'rgba(225, 29, 72, 0.95)',
+          borderColor: '#fecdd3',
+        };
+      }
+      return {
+        action: 'GO',
+        title: 'PROTECTED AV: CRUISE (60 km/h)',
+        subtitle: 'Trust accumulator integrating residuals',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(16, 185, 129, 0.95)',
+        borderColor: '#a7f3d0',
+      };
+
+    case 'scen_7_pulsed_spoof':
+      if (causeAwareAlarm) {
+        return {
+          action: 'STOP',
+          title: 'PROTECTED AV: SAFE CONTROLLED STOP (0 km/h)',
+          subtitle: 'Anti-persistence spoof caught by asymmetric decay (alpha=0.20) — Safe pull-over!',
+          shouldBrake: true,
+          color: '#ffffff',
+          bg: 'rgba(225, 29, 72, 0.95)',
+          borderColor: '#fecdd3',
+        };
+      }
+      return {
+        action: 'GO',
+        title: 'PROTECTED AV: CRUISE (60 km/h)',
+        subtitle: 'Monitoring sensor integrity',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(16, 185, 129, 0.95)',
+        borderColor: '#a7f3d0',
+      };
+
+    case 'scen_8_guardrail_multipath':
+      return {
+        action: 'GO',
+        title: 'PROTECTED AV: SMOOTH CRUISE (60 km/h)',
+        subtitle: 'Guardrail specular reflection isolated by LiDAR bounding box — No false alarms',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(16, 185, 129, 0.95)',
+        borderColor: '#a7f3d0',
+      };
+
+    case 'scen_9_boresight_drift':
+      return {
+        action: 'GO',
+        title: 'PROTECTED AV: STEADY CRUISE (60 km/h)',
+        subtitle: 'Mechanical boresight drift absorbed in gate without trust degradation',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(16, 185, 129, 0.95)',
+        borderColor: '#a7f3d0',
+      };
+
+    default:
+      return {
+        action: 'GO',
+        title: 'PROTECTED AV: HIGHWAY CRUISE (60 km/h)',
+        subtitle: 'Perception cross-modal integrity verified',
+        shouldBrake: false,
+        color: '#ffffff',
+        bg: 'rgba(16, 185, 129, 0.95)',
+        borderColor: '#a7f3d0',
+      };
+  }
+}
 
 // ============================================================================
 // Shared Ego Dynamic Physics State (Closed-Loop Longitudinal Actuation)
@@ -1484,11 +1770,17 @@ export const Scene3D: React.FC<Scene3DProps> = ({
   const [showWavefronts, setShowWavefronts] = useState<boolean>(true);
   const [rainActive, setRainActive] = useState<boolean>(false);
   const [manualSpoof, setManualSpoof] = useState<boolean>(false);
+  const [isProtectedMode, setIsProtectedMode] = useState<boolean>(true);
 
   // Live Speedometer State for React Display
   const [uiSpeedKmh, setUiSpeedKmh] = useState<number>(60);
   const [uiAccelG, setUiAccelG] = useState<number>(0);
   const [uiBraking, setUiBraking] = useState<boolean>(false);
+
+  // Compute reactive maneuver decision for banner and HUD
+  const decision = useMemo(() => {
+    return computeManeuverDecision(scenarioId, telemetry, isProtectedMode, manualSpoof);
+  }, [scenarioId, telemetry, isProtectedMode, manualSpoof]);
 
   // Closed-Loop Vehicle Dynamics Simulation Loop (60 Hz)
   useEffect(() => {
@@ -1504,13 +1796,10 @@ export const Scene3D: React.FC<Scene3DProps> = ({
       ego.manualSpoof = manualSpoof;
 
       const telem = frameDataRef.current;
-      const alarmActive =
-        telem?.evaluation.alarmStatus === 'SPOOF_ATTACK_CONFIRMED' ||
-        telem?.evaluation.detectors.causeAware.emergencyBrakeActive ||
-        manualSpoof;
+      const maneuver = computeManeuverDecision(scenarioId, telem, isProtectedMode, manualSpoof);
 
-      // Closed-Loop Dynamic Velocity Actuation
-      if (alarmActive) {
+      // Closed-Loop Dynamic Velocity Actuation based on Perception Decision
+      if (maneuver.shouldBrake) {
         // Slam Emergency Brakes
         ego.isBraking = true;
         const decel = 8.5; // m/s^2 (~0.87G)
@@ -1522,7 +1811,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
         ego.followerDist = Math.max(3.2, ego.followerDist - 5.5 * dt);
         ego.followerRisk = ego.followerDist < 5.0 && !telem?.measurement.isAttackActive;
       } else {
-        // Accelerate back up to cruising speed (60 km/h)
+        // Accelerate back up to cruising speed (60 km/h) / Keep Going
         ego.isBraking = false;
         const accel = 3.0; // m/s^2 (~0.30G)
         ego.speedMs = Math.min(16.7, ego.speedMs + accel * dt);
@@ -1553,7 +1842,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
 
     animId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animId);
-  }, [isPlaying, rainActive, manualSpoof, uiSpeedKmh]);
+  }, [isPlaying, rainActive, manualSpoof, isProtectedMode, scenarioId, uiSpeedKmh]);
 
   const isAlarm = telemetry?.evaluation.alarmStatus === 'SPOOF_ATTACK_CONFIRMED' || manualSpoof;
 
@@ -1772,6 +2061,23 @@ export const Scene3D: React.FC<Scene3DProps> = ({
           </button>
 
           <button
+            onClick={() => setIsProtectedMode(!isProtectedMode)}
+            className="btn-secondary"
+            style={{
+              fontSize: '0.72rem',
+              padding: '4px 8px',
+              background: isProtectedMode ? '#f0fdf4' : '#fff7ed',
+              color: isProtectedMode ? '#15803d' : '#c2410c',
+              border: `1px solid ${isProtectedMode ? '#bbf7d0' : '#fed7aa'}`,
+              fontWeight: 700,
+            }}
+            title="Toggle between Protected AV (Cause-Aware + ML Guard) and Naive AV (No Defense)"
+          >
+            {isProtectedMode ? <ShieldCheck size={13} color="#16a34a" /> : <AlertOctagon size={13} color="#ea580c" />}
+            {isProtectedMode ? 'AV: Protected' : 'AV: Naive'}
+          </button>
+
+          <button
             onClick={() => setManualSpoof(!manualSpoof)}
             className="btn-secondary"
             style={{
@@ -1814,34 +2120,42 @@ export const Scene3D: React.FC<Scene3DProps> = ({
         </div>
       </div>
 
-      {/* SPOOF ATTACK CONFIRMED Emergency Alert Banner */}
-      {isAlarm && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '50px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 12,
-            background: 'rgba(225, 29, 72, 0.95)',
-            color: '#ffffff',
-            padding: '6px 16px',
-            borderRadius: '6px',
-            boxShadow: '0 4px 16px rgba(225, 29, 72, 0.35)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            fontWeight: 800,
-            fontSize: '0.78rem',
-            letterSpacing: '0.04em',
-            border: '1px solid #fecdd3',
-            pointerEvents: 'none',
-          }}
-        >
-          <ShieldAlert size={16} color="#ffffff" />
-          <span>SPOOF ATTACK CONFIRMED — AUTOMATIC EMERGENCY BRAKE ENGAGED</span>
+      {/* Dynamic Autonomous Maneuver Decision Banner (GO vs STOP) */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '46px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 12,
+          background: decision.bg,
+          color: decision.color,
+          border: `1px solid ${decision.borderColor}`,
+          padding: '5px 16px',
+          borderRadius: '8px',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '2px',
+          backdropFilter: 'blur(8px)',
+          pointerEvents: 'none',
+          textAlign: 'center',
+          maxWidth: '90%',
+          transition: 'all 0.25s ease',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 800, fontSize: '0.78rem', letterSpacing: '0.02em' }}>
+          {decision.action === 'STOP' && <AlertOctagon size={14} color={decision.color} />}
+          {decision.action === 'SUPPRESS_AND_GO' && <ShieldCheck size={14} color={decision.color} />}
+          {decision.action === 'GO' && <CheckCircle2 size={14} color={decision.color} />}
+          {decision.action === 'CRASH_RISK' && <ShieldAlert size={14} color={decision.color} />}
+          <span>{decision.title}</span>
         </div>
-      )}
+        <div style={{ fontSize: '0.67rem', opacity: 0.92, fontWeight: 500 }}>
+          {decision.subtitle}
+        </div>
+      </div>
 
       {/* Mini Range-Doppler Oscilloscope Radar Display */}
       <MiniRangeDopplerHUD telemetry={telemetry} />

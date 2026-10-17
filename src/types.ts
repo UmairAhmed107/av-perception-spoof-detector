@@ -78,7 +78,11 @@ export interface SensorMeasurement {
     isDetected: boolean;
     snrDb: number; // SNR in dB
     trackAge: number; // frames of continuous radar track
+    rangeElongation?: number; // multipath path elongation in meters
+    nearReflector?: boolean; // proximity to guardrail or wall
   };
+  rangeElongation?: number;
+  nearReflector?: boolean;
   isAttackActive: boolean;
   attackType?: string;
   scenarioExplanation: string;

@@ -118,6 +118,11 @@ export interface EvaluationHistory {
   trustScore: number;
   consecutiveUnattributed: number;
   strictConsecutiveCount: number;
+  currentBenignCause?: AttributionCategory;
+  consecutiveBenignCount: number;
+  lastResidualSign: number;
+  sameSignResidualStreak: number;
+  alarmLatchCountdown: number;
   cumulativeStats: {
     naiveStrict: { falseAlarms: number; trueDetections: number };
     naiveLoose: { falseAlarms: number; trueDetections: number };
@@ -131,6 +136,11 @@ export function createInitialHistory(): EvaluationHistory {
     trustScore: 1.0,
     consecutiveUnattributed: 0,
     strictConsecutiveCount: 0,
+    currentBenignCause: undefined,
+    consecutiveBenignCount: 0,
+    lastResidualSign: 0,
+    sameSignResidualStreak: 0,
+    alarmLatchCountdown: 0,
     cumulativeStats: {
       naiveStrict: { falseAlarms: 0, trueDetections: 0 },
       naiveLoose: { falseAlarms: 0, trueDetections: 0 },
@@ -195,24 +205,28 @@ export function evaluateFrame(
   const absVExpected = Math.abs(vExpectedRad);
   const totalSpeed = ekf.speed;
 
-  // Rule 1: Radar MTI Clutter Notch Drop
+  // Rule 1: Radar MTI Clutter Notch Drop (Requires established track history)
   const r1_condition =
-    absVExpected < params.clutterNotchSpeed && totalSpeed > 0.9;
+    absVExpected < params.clutterNotchSpeed &&
+    totalSpeed > 0.9 &&
+    measurement.radar.trackAge > 4;
   ruleTrace.push({
     id: 1,
     name: 'Radar Clutter Notch Check',
-    condition: `|v_exp| (${absVExpected.toFixed(2)} m/s) < v_notch (${params.clutterNotchSpeed.toFixed(2)} m/s) & speed (${totalSpeed.toFixed(2)}) > 0.9 m/s`,
+    condition: `|v_exp| (${absVExpected.toFixed(2)} m/s) < v_notch (${params.clutterNotchSpeed.toFixed(2)} m/s) & speed (${totalSpeed.toFixed(2)}) > 0.9 m/s & TrackAge (${measurement.radar.trackAge}) > 4`,
     triggered: isAnomaly && r1_condition,
     verdict: r1_condition ? 'BENIGN_CLUTTER_NOTCH_DROP' : 'PASSED',
   });
 
-  // Rule 2: Tangential Doppler Blindness
+  // Rule 2: Tangential Doppler Blindness (Requires established track history)
   const r2_condition =
-    cosPhi < params.tangentialEpsilon && totalSpeed > 0.75;
+    cosPhi < params.tangentialEpsilon &&
+    totalSpeed > 0.75 &&
+    measurement.radar.trackAge > 4;
   ruleTrace.push({
     id: 2,
     name: 'Tangential Blindness Check',
-    condition: `|cos phi| (${cosPhi.toFixed(2)}) < eps (${params.tangentialEpsilon.toFixed(2)}) & speed (${totalSpeed.toFixed(2)}) > 0.75 m/s`,
+    condition: `|cos phi| (${cosPhi.toFixed(2)}) < eps (${params.tangentialEpsilon.toFixed(2)}) & speed (${totalSpeed.toFixed(2)}) > 0.75 m/s & TrackAge (${measurement.radar.trackAge}) > 4`,
     triggered: isAnomaly && r2_condition,
     verdict: r2_condition ? 'BENIGN_TANGENTIAL_BLINDNESS' : 'PASSED',
   });
@@ -230,16 +244,15 @@ export function evaluateFrame(
     verdict: r3_condition ? 'BENIGN_RCS_DROPOUT' : 'PASSED',
   });
 
-  // Rule 4: Synthetic Phantom Optical Injection Check (Empty Road Anomaly)
+  // Rule 4: Synthetic Phantom Optical Injection Check (Empty Road Anomaly - non-tangential motion NOT required)
   const r4_condition =
     measurement.radar.trackAge <= 2 &&
     measurement.lidar.pointDensity >= 0.88 &&
-    cosPhi >= params.tangentialEpsilon &&
     !measurement.radar.isDetected;
   ruleTrace.push({
     id: 4,
     name: 'Synthetic Phantom Verification',
-    condition: `TrackAge (${measurement.radar.trackAge}) <= 2 & LiDAR (${(measurement.lidar.pointDensity * 100).toFixed(0)}%) >= 88% & Non-Tangential & No Radar Return`,
+    condition: `TrackAge (${measurement.radar.trackAge}) <= 2 & LiDAR (${(measurement.lidar.pointDensity * 100).toFixed(0)}%) >= 88% & No Radar Return`,
     triggered: isAnomaly && r4_condition,
     verdict: r4_condition ? 'UNATTRIBUTED_ANOMALY (Synthetic Phantom)' : 'PASSED',
   });
@@ -257,32 +270,121 @@ export function evaluateFrame(
     verdict: r5_condition ? 'BENIGN_TIMING_SKEW' : 'PASSED',
   });
 
-  // Attribution Decision Tree
+  // Rule 6: Guardrail / Wall Multipath Ghost Reflection
+  const rangeElong = measurement.radar.rangeElongation ?? measurement.rangeElongation ?? 0;
+  const isNearReflector = measurement.radar.nearReflector ?? measurement.nearReflector ?? false;
+  const r6_condition =
+    (isNearReflector || rangeElong > 0.5) &&
+    measurement.lidar.isDetected &&
+    measurement.lidar.pointDensity >= 0.85 &&
+    measurement.radar.trackAge > 4;
+  ruleTrace.push({
+    id: 6,
+    name: 'Guardrail Multipath Ghost Check',
+    condition: `NearReflector (${isNearReflector}) & RangeElong (${rangeElong.toFixed(1)}m) > 0.5m & LiDAR (${(measurement.lidar.pointDensity * 100).toFixed(0)}%) >= 85% & TrackAge (${measurement.radar.trackAge}) > 4`,
+    triggered: isAnomaly && r6_condition,
+    verdict: r6_condition ? 'BENIGN_MULTIPATH_GHOST' : 'PASSED',
+  });
+
+  // Attribution Decision Tree & Persistence Capping
   if (isAnomaly) {
+    let candidateAttribution: AttributionCategory = 'UNATTRIBUTED_ANOMALY';
+    let candidateTitle = 'Unattributed Kinematic Discrepancy';
+    let candidateReason = `Residual (${residual.toFixed(2)} m/s, d_M = ${mahalanobisDist.toFixed(2)}σ) cannot be justified by geometry, notch filter, or multipath. Strong indicator of optical velocity injection.`;
+
     if (r1_condition) {
-      attribution = 'BENIGN_CLUTTER_NOTCH_DROP';
-      attributionTitle = 'Benign MTI Clutter Notch Dropout';
-      attributionReason = `Target expected radial speed is near-zero (${absVExpected.toFixed(2)} m/s < ${params.clutterNotchSpeed} m/s). Hardware MTI notch discarded reflection to reject stationary ground tarmac.`;
+      candidateAttribution = 'BENIGN_CLUTTER_NOTCH_DROP';
+      candidateTitle = 'Benign MTI Clutter Notch Dropout';
+      candidateReason = `Target expected radial speed is near-zero (${absVExpected.toFixed(2)} m/s < ${params.clutterNotchSpeed} m/s) with established track age (${measurement.radar.trackAge}). Hardware MTI notch discarded reflection to reject stationary ground tarmac.`;
     } else if (r2_condition) {
-      attribution = 'BENIGN_TANGENTIAL_BLINDNESS';
-      attributionTitle = 'Benign Tangential Doppler Blindness';
-      attributionReason = `Obstacle motion is orthogonal to sensor line of sight (|cos phi| = ${cosPhi.toFixed(2)}). Doppler physics is geometrically blind to cross-traffic lateral speed.`;
+      candidateAttribution = 'BENIGN_TANGENTIAL_BLINDNESS';
+      candidateTitle = 'Benign Tangential Doppler Blindness';
+      candidateReason = `Obstacle motion is orthogonal to sensor line of sight (|cos phi| = ${cosPhi.toFixed(2)}) with established track history. Doppler physics is geometrically blind to cross-traffic lateral speed.`;
     } else if (r3_condition) {
-      attribution = 'BENIGN_RCS_DROPOUT';
-      attributionTitle = 'Benign RCS Multipath Dropout';
-      attributionReason = `Radar SNR dropped to ${measurement.radar.snrDb.toFixed(1)} dB while established track history (${measurement.radar.trackAge} frames) and LiDAR point density remain high.`;
+      candidateAttribution = 'BENIGN_RCS_DROPOUT';
+      candidateTitle = 'Benign RCS Multipath Dropout';
+      candidateReason = `Radar SNR dropped to ${measurement.radar.snrDb.toFixed(1)} dB while established track history (${measurement.radar.trackAge} frames) and LiDAR point density remain high.`;
     } else if (r4_condition) {
-      attribution = 'UNATTRIBUTED_ANOMALY';
-      attributionTitle = 'Unattributed Phantom Obstacle (Spoofing)';
-      attributionReason = `LiDAR registered dense obstacle (${(measurement.lidar.pointDensity * 100).toFixed(0)}%), but 77 GHz radar confirms empty roadway ahead with zero prior track history.`;
+      candidateAttribution = 'UNATTRIBUTED_ANOMALY';
+      candidateTitle = 'Unattributed Phantom Obstacle (Spoofing)';
+      candidateReason = `LiDAR registered dense obstacle (${(measurement.lidar.pointDensity * 100).toFixed(0)}%), but 77 GHz radar confirms empty roadway ahead with zero prior track history.`;
+    } else if (r6_condition) {
+      candidateAttribution = 'BENIGN_MULTIPATH_GHOST';
+      candidateTitle = 'Benign Guardrail Multipath Ghost Reflection';
+      candidateReason = `Target is adjacent to metallic reflector (range elongation = ${rangeElong.toFixed(1)}m). Radar return experienced specular multi-bounce, while LiDAR point cloud confirms true obstacle position.`;
     } else if (r5_condition) {
-      attribution = 'BENIGN_TIMING_SKEW';
-      attributionTitle = 'Benign Timestamp Synchronization Jitter';
-      attributionReason = `Residual (${residual.toFixed(2)} m/s) is bounded within inter-frame latency jitter tolerance between LiDAR pulse sweep and radar chirp.`;
+      candidateAttribution = 'BENIGN_TIMING_SKEW';
+      candidateTitle = 'Benign Timestamp Synchronization Jitter';
+      candidateReason = `Residual (${residual.toFixed(2)} m/s) is bounded within inter-frame latency jitter tolerance between LiDAR pulse sweep and radar chirp.`;
+    }
+
+    // Cap persistence of benign causes:
+    // If the same benign cause fires for >3 consecutive frames (Rule 5) or beyond its expected duration,
+    // treat as UNATTRIBUTED_ANOMALY.
+    if (candidateAttribution.startsWith('BENIGN_')) {
+      if (history.currentBenignCause === candidateAttribution) {
+        history.consecutiveBenignCount += 1;
+      } else {
+        history.currentBenignCause = candidateAttribution;
+        history.consecutiveBenignCount = 1;
+      }
+
+      let capLimit = Infinity;
+      if (candidateAttribution === 'BENIGN_TIMING_SKEW') capLimit = 3;
+      else if (candidateAttribution === 'BENIGN_RCS_DROPOUT') capLimit = 4;
+      else if (candidateAttribution === 'BENIGN_CLUTTER_NOTCH_DROP') capLimit = 25;
+      else if (candidateAttribution === 'BENIGN_TANGENTIAL_BLINDNESS') capLimit = 30;
+      else if (candidateAttribution === 'BENIGN_MULTIPATH_GHOST') capLimit = 60;
+
+      if (history.consecutiveBenignCount > capLimit) {
+        attribution = 'UNATTRIBUTED_ANOMALY';
+        attributionTitle = `Unattributed Anomaly (${candidateAttribution} Persistence Capped)`;
+        attributionReason = `${candidateAttribution} persisted for ${history.consecutiveBenignCount} frames (exceeding ${capLimit}-frame physical tolerance). Persistent discrepancy treated as UNATTRIBUTED_ANOMALY.`;
+      } else {
+        attribution = candidateAttribution;
+        attributionTitle = candidateTitle;
+        attributionReason = candidateReason;
+      }
     } else {
-      attribution = 'UNATTRIBUTED_ANOMALY';
-      attributionTitle = 'Unattributed Kinematic Discrepancy';
-      attributionReason = `Residual (${residual.toFixed(2)} m/s, d_M = ${mahalanobisDist.toFixed(2)}σ) cannot be justified by geometry, notch filter, or multipath. Strong indicator of optical velocity injection.`;
+      history.currentBenignCause = undefined;
+      history.consecutiveBenignCount = 0;
+      attribution = candidateAttribution;
+      attributionTitle = candidateTitle;
+      attributionReason = candidateReason;
+    }
+  } else {
+    history.currentBenignCause = undefined;
+    history.consecutiveBenignCount = 0;
+  }
+
+  // Track same-signed residual streak for sub-threshold evidence accumulation
+  // Bounded boresight drift (< 0.5 m/s) and known multipath environments are excluded.
+  const isExcludedEnvironment =
+    isNearReflector ||
+    rangeElong > 0.5 ||
+    attribution === 'BENIGN_CLUTTER_NOTCH_DROP' ||
+    attribution === 'BENIGN_TANGENTIAL_BLINDNESS' ||
+    attribution === 'BENIGN_RCS_DROPOUT' ||
+    attribution === 'BENIGN_MULTIPATH_GHOST';
+
+  if (isExcludedEnvironment) {
+    history.lastResidualSign = 0;
+    history.sameSignResidualStreak = 0;
+  } else {
+    const currentSign = Math.sign(residual);
+    // Bounded boresight drift is ~0.28 m/s (+0.8 sigma). Drift must exceed 0.44 m/s (~1.15 sigma) to count as anomalous creep
+    if (Math.abs(residual) > 0.44 && currentSign !== 0) {
+      if (currentSign === history.lastResidualSign) {
+        history.sameSignResidualStreak += 1;
+      } else {
+        history.sameSignResidualStreak = Math.max(0, history.sameSignResidualStreak - 3);
+        if (history.sameSignResidualStreak === 0) {
+          history.lastResidualSign = currentSign;
+          history.sameSignResidualStreak = 1;
+        }
+      }
+    } else {
+      history.sameSignResidualStreak = Math.max(0, history.sameSignResidualStreak - 2);
     }
   }
 
@@ -293,10 +395,36 @@ export function evaluateFrame(
   if (attribution === 'UNATTRIBUTED_ANOMALY') {
     trustDelta = -params.alphaDecay;
     history.consecutiveUnattributed += 1;
-  } else {
-    // Both CONSISTENT and BENIGN physical exemptions restore credibility
+  } else if (attribution === 'CONSISTENT') {
+    // Only CONSISTENT frames get +betaRecovery
     trustDelta = params.betaRecovery;
     history.consecutiveUnattributed = Math.max(0, history.consecutiveUnattributed - 1);
+
+    // Sub-threshold evidence term: persistent same-signed residual over multiple frames
+    // steadily reduces trust (for the slow velocity creep scenario)
+    if (history.sameSignResidualStreak >= 3 && Math.abs(residual) > 0.44 && mahalanobisDist > 0.95) {
+      const streakFactor = Math.min(4.0, (history.sameSignResidualStreak - 2) * 0.4);
+      const subThresholdPenalty = Math.min(
+        0.22,
+        0.05 * (mahalanobisDist / params.chiGate) * streakFactor + 0.025 * streakFactor
+      );
+      trustDelta = -subThresholdPenalty;
+    }
+  } else if (attribution === 'BENIGN_TIMING_SKEW') {
+    // If timing skew persists in same direction, apply sub-threshold drain
+    if (history.sameSignResidualStreak >= 3 && Math.abs(residual) > 0.44) {
+      const streakFactor = Math.min(4.0, (history.sameSignResidualStreak - 2) * 0.4);
+      const subThresholdPenalty = Math.min(
+        0.22,
+        0.05 * (mahalanobisDist / params.chiGate) * streakFactor + 0.025 * streakFactor
+      );
+      trustDelta = -subThresholdPenalty;
+    } else {
+      trustDelta = 0;
+    }
+  } else {
+    // Benign-attributed frames: trustDelta = 0 (credibility preserved, but not artificially increased)
+    trustDelta = 0;
   }
 
   history.trustScore = Math.max(
@@ -304,11 +432,15 @@ export function evaluateFrame(
     Math.min(1.0, history.trustScore + trustDelta)
   );
 
+  // Latch SPOOF_ATTACK_CONFIRMED for 20 frames after the last trust < threshold frame
+  if (history.trustScore < params.trustThreshold) {
+    history.alarmLatchCountdown = 20;
+  } else if (history.alarmLatchCountdown > 0) {
+    history.alarmLatchCountdown -= 1;
+  }
+
   let alarmStatus: AlarmStatus = 'NORMAL';
-  if (
-    history.trustScore < params.trustThreshold &&
-    history.consecutiveUnattributed >= params.streakThreshold
-  ) {
+  if (history.trustScore < params.trustThreshold || history.alarmLatchCountdown > 0) {
     alarmStatus = 'SPOOF_ATTACK_CONFIRMED';
   } else if (attribution.startsWith('BENIGN_')) {
     alarmStatus = 'BENIGN_ATTRIBUTED';
@@ -334,8 +466,8 @@ export function evaluateFrame(
     }
   }
 
-  // 2. Naive Loose (±4.50σ)
-  const naiveLooseAnomaly = mahalanobisDist > 4.50 || !measurement.radar.isDetected;
+  // 2. Naive Loose (±4.50σ) - docs: wide threshold ignores missing return briefly
+  const naiveLooseAnomaly = mahalanobisDist > 4.50;
   const naiveLooseAlarm = naiveLooseAnomaly;
   const naiveLooseBrake = naiveLooseAlarm;
   let naiveLooseState: DetectorVerdict['state'] = 'NORMAL';
@@ -432,7 +564,7 @@ export function evaluateFrame(
       naiveLoose: {
         id: 'naive_loose',
         name: 'Naive Loose (±4.50σ)',
-        formula: 'd_M > 4.50 || !radarDetected',
+        formula: 'd_M > 4.50',
         isAnomaly: naiveLooseAnomaly,
         alarmTriggered: naiveLooseAlarm,
         emergencyBrakeActive: naiveLooseBrake,

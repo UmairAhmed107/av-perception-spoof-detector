@@ -123,7 +123,7 @@ export const SCENARIOS: Record<ScenarioId, ScenarioDefinition> = {
     initialPos: { x: 0.2, y: 16.5 },
     initialVel: { x: 0.0, y: 3.0 },
     headingDeg: 90,
-    threatDescription: 'RAMPED ADVERSARIAL DRIFT (Evades per-frame threshold)',
+    threatDescription: 'ACTIVE ADVERSARIAL ATTACK (Ramped velocity drift evading per-frame threshold)',
     physicalPhenomenon:
       'Attacker slowly increases injected LiDAR velocity (+0.02 m/s per frame). Single-frame gates are evaded initially, but continuous unverified innovation erodes the asymmetric trust accumulator.',
     detectorExpectedBehavior: {
@@ -256,6 +256,8 @@ export function generateScenarioMeasurement(
   let radarDopplerNoise = randomGaussian(0, params.sigmaRadar);
   let radarSnrDb = 18.0 + randomGaussian(0, 1.2);
   let radarTrackAge = frameIndex + 1;
+  let rangeElongation = 0.0;
+  let nearReflector = false;
 
   // Target range and LOS for ground truth
   const trueRange = Math.max(0.1, Math.sqrt(truePosX * truePosX + truePosY * truePosY));
@@ -304,9 +306,9 @@ export function generateScenarioMeasurement(
     }
 
     case 'scen_3_rcs_dropout': {
-      // Vehicle ahead. Between t = 2.0s and t = 2.4s, radar experiences RCS multipath dropout
+      // Vehicle ahead. Momentary 2-frame radar RCS multipath dropout (~0.10s)
       radarTrackAge = Math.max(6, frameIndex);
-      if (timeSec >= 2.0 && timeSec <= 2.35) {
+      if (timeSec >= 2.0 && timeSec < 2.10) {
         radarDetected = false;
         radarSnrDb = 4.2; // below 10 dB threshold
         explanation = 'Pavement water bounce caused destructive phase interference; radar SNR dropped to 4.2 dB.';
@@ -318,11 +320,12 @@ export function generateScenarioMeasurement(
     }
 
     case 'scen_4_loose_bypass': {
-      // Attacker injects calibrated +1.35 m/s velocity offset
+      // Attacker injects calibrated +1.35 m/s velocity offset (+3.8σ) into LiDAR tracking
       if (timeSec >= 1.0) {
         isAttackActive = true;
         attackType = 'CALIBRATED_VELOCITY_OFFSET';
-        // LiDAR perceived velocity has shifted by +1.35 m/s
+        const attackDt = timeSec - 1.0;
+        truePosY += 1.35 * attackDt;
         trueVy += 1.35;
         explanation = 'ATTACK ACTIVE: LiDAR velocity biased by +1.35 m/s (+3.8σ) to evade naive loose ±4.5σ threshold.';
       }
@@ -336,6 +339,7 @@ export function generateScenarioMeasurement(
         attackType = 'RAMPED_VELOCITY_CREEP';
         const creepDt = timeSec - 1.0;
         const deltaV = 0.40 * creepDt;
+        truePosY += 0.5 * 0.40 * creepDt * creepDt;
         trueVy += deltaV;
         explanation = `ATTACK ACTIVE: Velocity creeping at +0.40 m/s² (Current offset: +${deltaV.toFixed(2)} m/s).`;
       }
@@ -356,18 +360,19 @@ export function generateScenarioMeasurement(
     }
 
     case 'scen_7_pulsed_spoof': {
-      // 3 Hz square wave pulse (toggle on/off every frame or 2 frames)
+      // 5 Hz square wave pulse (1 frame on, 1 frame off at 20 Hz)
       if (timeSec >= 0.8) {
         isAttackActive = true;
         attackType = 'PULSED_SQUARE_WAVE';
-        const isPulseOn = Math.floor(timeSec * 6.0) % 2 === 0;
+        const frameOffset = Math.round((timeSec - 0.8) / 0.05);
+        const isPulseOn = frameOffset % 2 === 0;
+        const activePulseCount = Math.floor(frameOffset / 2) + 1;
+        truePosY += activePulseCount * (2.2 * 0.05);
         if (isPulseOn) {
-          // Injection frame: +2.0 m/s bias
-          trueVy += 2.0;
-          explanation = 'PULSE ON (Frame 1): Optical spoofing pulse active (+2.0 m/s offset).';
+          trueVy += 2.2;
+          explanation = 'PULSE ON: Optical spoofing pulse active (+2.2 m/s offset).';
         } else {
-          // Pause frame: reset counter
-          explanation = 'PULSE OFF (Frame 0): Pulse paused to trick integer N=3 persistence counters.';
+          explanation = 'PULSE OFF: Pulse paused to trick integer N=3 persistence counters.';
         }
       }
       break;
@@ -377,6 +382,8 @@ export function generateScenarioMeasurement(
       // Specular bounce off highway guardrail elevates radar Doppler by +1.8 m/s
       if (timeSec >= 1.2 && timeSec <= 3.8) {
         radarDopplerNoise += 1.8; // Multipath Doppler shift
+        rangeElongation = 1.4; // 1.4m path elongation
+        nearReflector = true; // Near guardrail
         explanation = 'Specular bounce from car side panel to guardrail elevated Doppler by +1.8 m/s.';
       }
       break;
@@ -418,7 +425,11 @@ export function generateScenarioMeasurement(
       isDetected: radarDetected,
       snrDb: Math.max(1.0, radarSnrDb),
       trackAge: radarTrackAge,
+      rangeElongation,
+      nearReflector,
     },
+    rangeElongation,
+    nearReflector,
     isAttackActive,
     attackType,
     scenarioExplanation: explanation,
